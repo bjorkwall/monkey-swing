@@ -46,6 +46,24 @@ class GameScene extends Phaser.Scene {
     this._isSick = false
     this._sickImmobilizeUntil = 0
     this._sickAnimStart = 0
+    this.crocodiles = []
+    this._crocNextId = 0
+    this._lastCrocFrameAt = 0
+    this._crocFrame = 1
+    this._isGameOver = false
+    this._gameOverUntil = 0
+    this._gameOverText = null
+    this._gameOverTitle = null
+    this._gameOverNumber = null
+    this._gameOverBg = null
+
+    this._bgm = null
+    this._isMuted = false
+    this._muteButton = null
+    this._crocSpawnAt = 0
+    this._crocActive = false
+    this._crocTimerText = null
+    this._crocTimerIcon = null
     this._isOnTreePlatform = false
 
     this._extraJumpAvailable = false
@@ -86,6 +104,11 @@ class GameScene extends Phaser.Scene {
     this.load.image('monkey-sick-2', 'assets/monkey/monkey-sick-2.png')
     this.load.image('monkey-sick-3', 'assets/monkey/monkey-sick-3.png')
     this.load.image('monkey-sick-4', 'assets/monkey/monkey-sick-4.png')
+    this.load.image('crocodile-left-1', 'assets/crocodile/crocodile-left-1.png')
+    this.load.image('crocodile-left-2', 'assets/crocodile/crocodile-left-2.png')
+    this.load.image('crocodile-right-1', 'assets/crocodile/crocodile-right-1.png')
+    this.load.image('crocodile-right-2', 'assets/crocodile/crocodile-right-2.png')
+    this.load.audio('bgm', 'assets/music/monkey_swing.mp3')
     this.load.image('banana', 'assets/bananas/banana.png')
     this.load.image('rotten-banana', 'assets/bananas/rotten-banana.png')
     this.load.image('bamboo', 'assets/plants/bamboo.png')
@@ -100,6 +123,20 @@ class GameScene extends Phaser.Scene {
     // Debug: if you see this text, the scene is running (remove once fixed)
     this.add.text(16, 16, 'Scene started', { fontSize: '14px', color: '#88ff88' }).setScrollFactor(0).setDepth(9999)
 
+    // Hard reset on restart
+    if (this.crocodiles?.length) {
+      for (const c of this.crocodiles) c.destroy()
+    }
+    this.crocodiles = []
+    this._crocNextId = 0
+    this._crocActive = false
+    this._crocSpawnAt = 0
+    this._isGameOver = false
+    this._gameOverUntil = 0
+    if (this._gameOverBg) this._gameOverBg.setVisible(false)
+    if (this._gameOverTitle) this._gameOverTitle.setVisible(false)
+    if (this._gameOverNumber) this._gameOverNumber.setVisible(false)
+
     try {
       if (!this.matter || !this.matter.world) {
         throw new Error('Matter physics not available on scene')
@@ -113,7 +150,9 @@ class GameScene extends Phaser.Scene {
       this._createTrees()
       this._createBananas()
       this._createMonkey()
+      this._createCrocodile()
       this._createHUD()
+      this._createAudio()
       this._wireCollisions()
     } catch (err) {
       console.error('[GameScene] create() failed:', err)
@@ -153,6 +192,12 @@ class GameScene extends Phaser.Scene {
     this.game.events.on('focus', () => {
       if (this.input?.keyboard) this.input.keyboard.enabled = true
     })
+
+    this._crocSpawnAt = (this.time?.now ?? 0) + 30000
+    this._crocActive = false
+    this.bananaScore = 0
+    if (this.bananaCounterText) this.bananaCounterText.setText('0')
+    if (this._crocTimerText) this._crocTimerText.setText('30')
   }
 
   update() {
@@ -167,6 +212,7 @@ class GameScene extends Phaser.Scene {
       })
     }
 
+    this._updateGameOver()
     if (this.monkey.y > this.worldH + 200) {
       this.scene.restart()
       return
@@ -179,6 +225,7 @@ class GameScene extends Phaser.Scene {
     this._handleMonkeyMovement()
     this._updateMonkeyVisual()
 
+    this._updateCrocodile()
     this._driveLianas()
     const nearest = this._nearestBobWithin(70)
     this._updateTreeMarkers(nearest)
@@ -193,6 +240,7 @@ class GameScene extends Phaser.Scene {
     this._applyJumpBoost()
     this._checkBananaOverlap()
     this._flushBananaCleanup()
+    this._checkCrocodileHit()
   }
 
   _drawBackground() {
@@ -484,6 +532,17 @@ class GameScene extends Phaser.Scene {
     this.monkey.setFixedRotation()
   }
 
+  _createCrocodile() {
+    if (!this.textures.exists('crocodile-right-1')) return
+    const y = this.groundY - 16
+    const croc = this.add.image(-200, y, 'crocodile-right-1').setDepth(15)
+    croc.setDisplaySize(180, 80)
+    croc.setVisible(false)
+    croc.setData('dir', 1)
+    croc.setData('id', this._crocNextId++)
+    this.crocodiles.push(croc)
+  }
+
   _createBananas() {
     if (!this.textures.exists('banana')) return
 
@@ -579,13 +638,13 @@ class GameScene extends Phaser.Scene {
     const y = pad
 
     this.bananaCounterBg = this.add.graphics().setScrollFactor(0).setDepth(1000)
-    this.bananaCounterBg.fillStyle(0x111827, 0.8)
+    this.bananaCounterBg.fillStyle(0x111827, 0.7)
     this.bananaCounterBg.fillRoundedRect(x, y, boxW, boxH, 10)
-    this.bananaCounterBg.lineStyle(2, 0x1f2937, 0.9)
+    this.bananaCounterBg.lineStyle(4, 0x3f2a1d, 0.95)
     this.bananaCounterBg.strokeRoundedRect(x, y, boxW, boxH, 10)
 
     this.bananaCounterIcon = this.add.image(x + 24, y + boxH / 2, 'banana').setScrollFactor(0).setDepth(1001)
-    this.bananaCounterIcon.setDisplaySize(24, 24)
+    this.bananaCounterIcon.setDisplaySize(28, 28)
 
     this.bananaCounterText = this.add
       .text(x + 48, y + 10, '0', {
@@ -595,6 +654,61 @@ class GameScene extends Phaser.Scene {
       })
       .setScrollFactor(0)
       .setDepth(1001)
+
+    // Crocodile timer (same box)
+    this._crocTimerIcon = this.add.image(x + 92, y + boxH / 2, 'crocodile-right-1').setScrollFactor(0).setDepth(1001)
+    this._crocTimerIcon.setDisplaySize(30, 18)
+    this._crocTimerText = this.add
+      .text(x + 112, y + 10, '30', {
+        fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif',
+        fontSize: '16px',
+        color: '#ffffff'
+      })
+      .setScrollFactor(0)
+      .setDepth(1001)
+
+    // Mute button
+    const muteX = x - 56
+    const muteY = y
+    const muteW = 40
+    const muteH = 44
+    this._muteButton = this.add
+      .text(muteX + muteW / 2, muteY + 12, '🔊', {
+        fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif',
+        fontSize: '18px',
+        color: '#111827'
+      })
+      .setScrollFactor(0)
+      .setDepth(1002)
+      .setOrigin(0.5, 0)
+      .setInteractive({ useHandCursor: true })
+
+    const muteBg = this.add.graphics().setScrollFactor(0).setDepth(1001)
+    muteBg.fillStyle(0x111827, 0.7)
+    muteBg.fillRoundedRect(muteX, muteY, muteW, muteH, 10)
+    muteBg.lineStyle(3, 0xdc2626, 1)
+    muteBg.strokeRoundedRect(muteX, muteY, muteW, muteH, 10)
+
+    this._muteButton.on('pointerdown', () => {
+      this._toggleMute()
+    })
+  }
+
+  _createAudio() {
+    if (!this.sound || !this.cache.audio.exists('bgm')) return
+    if (!this._bgm) {
+      this._bgm = this.sound.add('bgm', { loop: true, volume: 0.35 })
+      if (!this._isMuted) this._bgm.play()
+    }
+  }
+
+  _toggleMute() {
+    this._isMuted = !this._isMuted
+    if (this._bgm) {
+      if (this._isMuted) this._bgm.pause()
+      else this._bgm.resume()
+    }
+    if (this._muteButton) this._muteButton.setText(this._isMuted ? '🔇' : '🔊')
   }
 
   _updateHUD(nearest) {
@@ -614,6 +728,7 @@ class GameScene extends Phaser.Scene {
     if (!this.cursors) return
     if (this.isGrabbing) return // when attached to liana, movement is physics-driven
     if (this._isClimbingBamboo && !this._isOnBambooTop) return
+    if (this._isGameOver) return
     if (this._isSick) {
       if (this._sickImmobilizeUntil > (this.time?.now ?? 0)) this.monkey.setVelocityX(0)
       this.monkey.setVelocityX(0)
@@ -730,6 +845,140 @@ class GameScene extends Phaser.Scene {
     }
 
     if (absVx > 0.15) this._faceDir = vx < 0 ? -1 : 1
+  }
+
+  _updateCrocodile() {
+    if (this._isGameOver) return
+    const now = this.time?.now ?? 0
+
+    const remaining = Math.max(0, Math.ceil((this._crocSpawnAt - now) / 1000))
+    if (this._crocTimerText) this._crocTimerText.setText(String(remaining))
+    if (now >= this._crocSpawnAt) {
+      this._crocActive = true
+      const croc = this.crocodiles.find((c) => !c.visible)
+      if (croc) {
+        croc.x = -60
+        croc.setData('dir', 1)
+        croc.setVisible(true)
+      } else {
+        this._createCrocodile()
+        const created = this.crocodiles[this.crocodiles.length - 1]
+        created.x = -60
+        created.setData('dir', 1)
+        created.setVisible(true)
+      }
+      this._crocSpawnAt = now + 20000
+    }
+    if (!this._crocActive) return
+
+    if (!this._lastCrocFrameAt) this._lastCrocFrameAt = now
+    if (now - this._lastCrocFrameAt >= 200) {
+      this._lastCrocFrameAt = now
+      this._crocFrame = this._crocFrame === 1 ? 2 : 1
+    }
+
+    const speed = 1.4
+    const minX = 80
+    const maxX = this.worldW - 80
+    for (const croc of this.crocodiles) {
+      if (!croc.visible) continue
+      const dir = croc.getData('dir') ?? 1
+      croc.x += speed * dir
+
+      if (croc.x <= minX) {
+        croc.x = minX
+        croc.setData('dir', 1)
+      } else if (croc.x >= maxX) {
+        croc.x = maxX
+        croc.setData('dir', -1)
+      }
+
+      const dirKey = (croc.getData('dir') ?? 1) < 0 ? 'left' : 'right'
+      const frameKey = `crocodile-${dirKey}-${this._crocFrame}`
+      if (croc.texture.key !== frameKey) {
+        croc.setTexture(frameKey)
+        croc.setDisplaySize(180, 80)
+      }
+    }
+  }
+
+  _checkCrocodileHit() {
+    if (!this.crocodiles.length || this._isGameOver) return
+    for (const croc of this.crocodiles) {
+      if (!croc.visible) continue
+      const dx = Math.abs(this.monkey.x - croc.x)
+      const dy = Math.abs(this.monkey.y - croc.y)
+      if (dx < 40 && dy < 30) {
+        this._startGameOver()
+        return
+      }
+    }
+  }
+
+  _startGameOver() {
+    if (this._isGameOver) return
+    this._isGameOver = true
+    const now = this.time?.now ?? 0
+    this._gameOverUntil = now + 5000
+    this.monkey.setVelocity(0, 0)
+    this.monkey.setIgnoreGravity(false)
+    this.monkey.setStatic(false)
+    this.monkey.setSensor(false)
+
+    if (!this._gameOverBg) {
+      const cx = this.cameras.main.width / 2
+      const cy = this.cameras.main.height / 2
+      const bw = 260
+      const bh = 160
+      const radius = 14
+      this._gameOverBg = this.add.graphics().setScrollFactor(0).setDepth(2000)
+      this._gameOverBg.fillStyle(0xfef3c7, 0.7)
+      this._gameOverBg.fillRoundedRect(cx - bw / 2, cy - bh / 2, bw, bh, radius)
+      this._gameOverBg.lineStyle(4, 0x3f2a1d, 1)
+      this._gameOverBg.strokeRoundedRect(cx - bw / 2, cy - bh / 2, bw, bh, radius)
+
+      this._gameOverTitle = this.add
+        .text(cx, cy - 40, 'Game Over', {
+          fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif',
+          fontSize: '42px',
+          color: '#111827',
+          align: 'center'
+        })
+        .setScrollFactor(0)
+        .setOrigin(0.5, 0.5)
+        .setDepth(2001)
+
+      this._gameOverNumber = this.add
+        .text(cx, cy + 30, '5', {
+          fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif',
+          fontSize: '84px',
+          color: '#111827',
+          align: 'center'
+        })
+        .setScrollFactor(0)
+        .setOrigin(0.5, 0.5)
+        .setDepth(2001)
+    }
+    this._gameOverBg.setVisible(true)
+    this._gameOverTitle.setVisible(true)
+    this._gameOverNumber.setVisible(true)
+    this._gameOverNumber.setText('5')
+  }
+
+  _updateGameOver() {
+    if (!this._isGameOver) return
+    const now = this.time?.now ?? 0
+    const remaining = Math.max(0, Math.ceil((this._gameOverUntil - now) / 1000))
+    if (this._gameOverNumber) {
+      this._gameOverNumber.setText(String(remaining))
+    }
+    if (now >= this._gameOverUntil) {
+      if (this._gameOverBg) this._gameOverBg.setVisible(false)
+      if (this._gameOverTitle) this._gameOverTitle.setVisible(false)
+      if (this._gameOverNumber) this._gameOverNumber.setVisible(false)
+      this._isGameOver = false
+      this.scene.restart()
+    }
   }
 
   _wireCollisions() {
@@ -872,6 +1121,7 @@ class GameScene extends Phaser.Scene {
   }
 
   _jumpOrRelease() {
+    if (this._isGameOver) return
     if (this._isSick) return
     if (this._isClimbingBamboo) {
       this._isClimbingBamboo = false
@@ -951,6 +1201,7 @@ class GameScene extends Phaser.Scene {
   }
 
   _tryGrab() {
+    if (this._isGameOver) return
     if (this._isSick) return
     if (this.isGrabbing) return
 
