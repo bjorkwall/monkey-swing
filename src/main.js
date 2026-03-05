@@ -60,6 +60,16 @@ class GameScene extends Phaser.Scene {
     this._bgm = null
     this._isMuted = false
     this._muteButton = null
+    this._isMobile = false
+    this._mobile = { left: false, right: false, up: false, down: false }
+    this._joystick = {
+      base: null,
+      knob: null,
+      pointerId: null,
+      radius: 40,
+      centerX: 0,
+      centerY: 0
+    }
     this._crocSpawnAt = 0
     this._crocActive = false
     this._crocTimerText = null
@@ -192,6 +202,9 @@ class GameScene extends Phaser.Scene {
     this.game.events.on('focus', () => {
       if (this.input?.keyboard) this.input.keyboard.enabled = true
     })
+
+    this._isMobile = window.matchMedia?.('(pointer: coarse)').matches || /Mobi|Android|iPad|iPhone/i.test(navigator.userAgent)
+    if (this._isMobile) this._createMobileControls()
 
     this._crocSpawnAt = (this.time?.now ?? 0) + 30000
     this._crocActive = false
@@ -725,7 +738,7 @@ class GameScene extends Phaser.Scene {
   }
 
   _handleMonkeyMovement() {
-    if (!this.cursors) return
+    if (!this.cursors && !this._isMobile) return
     if (this.isGrabbing) return // when attached to liana, movement is physics-driven
     if (this._isClimbingBamboo && !this._isOnBambooTop) return
     if (this._isGameOver) return
@@ -735,8 +748,8 @@ class GameScene extends Phaser.Scene {
       return
     }
 
-    const left = this.cursors.left?.isDown
-    const right = this.cursors.right?.isDown
+    const left = this._inputLeft()
+    const right = this._inputRight()
     const onGround = this._isGrounded()
 
     const vx = this.monkey.body.velocity.x
@@ -1189,8 +1202,8 @@ class GameScene extends Phaser.Scene {
     this._jumpBoostUntil = (this.time?.now ?? 0) + 320
     this._jumpBoostActive = true
     if (!fromLiana) {
-      const left = this.cursors?.left?.isDown
-      const right = this.cursors?.right?.isDown
+      const left = this._inputLeft()
+      const right = this._inputRight()
       const dir = left && !right ? -1 : right && !left ? 1 : this._faceDir || 1
       const horizSpeed = 4.5
       this.monkey.setVelocityX(dir * horizSpeed)
@@ -1295,10 +1308,10 @@ class GameScene extends Phaser.Scene {
   }
 
   _handleLianaClimb() {
-    if (!this.cursors) return
+    if (!this.cursors && !this._isMobile) return
     if (this._isSick) return
-    const up = this.cursors.up?.isDown
-    const down = this.cursors.down?.isDown
+    const up = this._inputUp()
+    const down = this._inputDown()
     if (!up && !down) return
 
     const dt = (this.game?.loop?.delta ?? 16) / 1000
@@ -1355,11 +1368,11 @@ class GameScene extends Phaser.Scene {
   }
 
   _handleBambooClimb() {
-    if (!this.cursors || !this.monkey) return
+    if ((!this.cursors && !this._isMobile) || !this.monkey) return
     if (this._isSick) return
     if (this.isGrabbing) return
-    const up = this.cursors.up?.isDown
-    const down = this.cursors.down?.isDown
+    const up = this._inputUp()
+    const down = this._inputDown()
     const onBamboo = this._isMonkeyOnBamboo()
 
     if (!onBamboo) {
@@ -1402,8 +1415,8 @@ class GameScene extends Phaser.Scene {
     this._bambooGrabActive = true
     this.monkey.setStatic(false)
     this.monkey.setIgnoreGravity(true)
-    const leftKey = this.cursors.left?.isDown
-    const rightKey = this.cursors.right?.isDown
+    const leftKey = this._inputLeft()
+    const rightKey = this._inputRight()
     let vx = 0
     if (leftKey && !rightKey) vx = -3
     else if (rightKey && !leftKey) vx = 3
@@ -1459,18 +1472,129 @@ class GameScene extends Phaser.Scene {
     }
 
     // If any movement input is pressed, forcefully unstick.
-    if (this.cursors) {
-      const anyMove =
-        this.cursors.left?.isDown ||
-        this.cursors.right?.isDown ||
-        this.cursors.up?.isDown ||
-        this.cursors.down?.isDown
-      if (anyMove && !this.isGrabbing && !this._isClimbingBamboo) {
-        if (this.monkey.body.isStatic) this.monkey.setStatic(false)
-        this.monkey.setIgnoreGravity(false)
-        this.monkey.setSensor(false)
-      }
+    const anyMove = this._anyMovePressed()
+    if (anyMove && !this.isGrabbing && !this._isClimbingBamboo) {
+      if (this.monkey.body.isStatic) this.monkey.setStatic(false)
+      this.monkey.setIgnoreGravity(false)
+      this.monkey.setSensor(false)
     }
+  }
+
+  _inputLeft() {
+    return Boolean(this.cursors?.left?.isDown || this._mobile?.left)
+  }
+  _inputRight() {
+    return Boolean(this.cursors?.right?.isDown || this._mobile?.right)
+  }
+  _inputUp() {
+    return Boolean(this.cursors?.up?.isDown || this._mobile?.up)
+  }
+  _inputDown() {
+    return Boolean(this.cursors?.down?.isDown || this._mobile?.down)
+  }
+  _anyMovePressed() {
+    return this._inputLeft() || this._inputRight() || this._inputUp() || this._inputDown()
+  }
+
+  _createMobileControls() {
+    const cam = this.cameras.main
+    const pad = 18
+    const baseR = 44
+    const knobR = 18
+    const cx = pad + baseR
+    const cy = cam.height - pad - baseR
+
+    const base = this.add.graphics().setScrollFactor(0).setDepth(3000)
+    base.fillStyle(0x111827, 0.5)
+    base.fillCircle(cx, cy, baseR)
+    base.lineStyle(2, 0x3f2a1d, 0.9)
+    base.strokeCircle(cx, cy, baseR)
+
+    const knob = this.add.graphics().setScrollFactor(0).setDepth(3001)
+    knob.fillStyle(0xfef3c7, 0.9)
+    knob.fillCircle(cx, cy, knobR)
+
+    this._joystick.base = base
+    this._joystick.knob = knob
+    this._joystick.centerX = cx
+    this._joystick.centerY = cy
+    this._joystick.radius = baseR
+
+    const jumpBtn = this.add
+      .text(cam.width - pad - 70, cam.height - pad - 90, 'JUMP', {
+        fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif',
+        fontSize: '16px',
+        color: '#111827',
+        backgroundColor: '#fef3c7',
+        padding: { x: 10, y: 8 }
+      })
+      .setScrollFactor(0)
+      .setDepth(3001)
+      .setOrigin(0.5, 0.5)
+      .setInteractive({ useHandCursor: true })
+    jumpBtn.on('pointerdown', () => this._jumpOrRelease())
+
+    const grabBtn = this.add
+      .text(cam.width - pad - 70, cam.height - pad - 28, 'GRAB', {
+        fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif',
+        fontSize: '16px',
+        color: '#111827',
+        backgroundColor: '#fef3c7',
+        padding: { x: 10, y: 8 }
+      })
+      .setScrollFactor(0)
+      .setDepth(3001)
+      .setOrigin(0.5, 0.5)
+      .setInteractive({ useHandCursor: true })
+    grabBtn.on('pointerdown', () => this._tryGrab())
+
+    this.input.on('pointerdown', (p) => {
+      const dx = p.x - cx
+      const dy = p.y - cy
+      if (Math.hypot(dx, dy) <= baseR) {
+        this._joystick.pointerId = p.id
+        this._updateJoystick(p)
+      }
+    })
+
+    this.input.on('pointermove', (p) => {
+      if (this._joystick.pointerId === p.id) this._updateJoystick(p)
+    })
+
+    this.input.on('pointerup', (p) => {
+      if (this._joystick.pointerId === p.id) {
+        this._joystick.pointerId = null
+        this._joystick.knob.clear()
+        this._joystick.knob.fillStyle(0xfef3c7, 0.9)
+        this._joystick.knob.fillCircle(cx, cy, knobR)
+        this._mobile.left = this._mobile.right = this._mobile.up = this._mobile.down = false
+      }
+    })
+  }
+
+  _updateJoystick(p) {
+    const j = this._joystick
+    const dx = p.x - j.centerX
+    const dy = p.y - j.centerY
+    const dist = Math.hypot(dx, dy)
+    const max = j.radius
+    const nx = dist > 0 ? dx / dist : 0
+    const ny = dist > 0 ? dy / dist : 0
+    const clamped = Math.min(dist, max)
+    const kx = j.centerX + nx * clamped
+    const ky = j.centerY + ny * clamped
+
+    j.knob.clear()
+    j.knob.fillStyle(0xfef3c7, 0.9)
+    j.knob.fillCircle(kx, ky, 18)
+
+    const dead = 0.25
+    const ax = dx / max
+    const ay = dy / max
+    this._mobile.left = ax < -dead
+    this._mobile.right = ax > dead
+    this._mobile.up = ay < -dead
+    this._mobile.down = ay > dead
   }
 
   _refreshGrounded() {
@@ -1664,6 +1788,10 @@ const config = {
   height: 800,
   backgroundColor: '#0b1020',
   scene: [GameScene],
+  scale: {
+    mode: Phaser.Scale.FIT,
+    autoCenter: Phaser.Scale.CENTER_BOTH
+  },
   physics: {
     default: 'matter',
     matter: {
