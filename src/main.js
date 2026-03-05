@@ -18,47 +18,127 @@ class GameScene extends Phaser.Scene {
     this.ropeGfx = null
     this.treesGfx = null
     this.trees = []
+    this.platforms = []
 
     this.monkey = null
     this.monkeyContactsWithGround = 0
+    this._lastGroundedAt = 0
 
     this.grabConstraint = null
     this.grabbedTree = null
+    this.isGrabbing = false
+    this.grabRatio = 1
+
+    this.bananas = []
+    this._bananaCleanup = []
+    this.bananaScore = 0
+    this.bananaCounterBg = null
+    this.bananaCounterIcon = null
+    this.bananaCounterText = null
+
+    this.bambooSprite = null
+    this._isClimbingBamboo = false
+    this._isOnBambooTop = false
+    this._bambooTopLine = null
+    this._bambooGrabActive = false
+    this._bambooGrabFrame = 1
+    this._lastBambooGrabFrameAt = 0
+    this._isSick = false
+    this._sickImmobilizeUntil = 0
+    this._sickAnimStart = 0
+    this._isOnTreePlatform = false
+
+    this._extraJumpAvailable = false
+
+    this._jumpBoostActive = false
+    this._jumpBoostUntil = 0
+    this._jumpTargetY = 0
+    this._jumpStartX = 0
+    this._jumpStartY = 0
+    this._jumpDirX = 0
+    this._jumpDirY = -1
+    this._jumpTargetAlong = 0
 
     this._monkeyVisualKey = null
-    this._monkeySize = 26
+    this._monkeySize = 78
     this._walkPhase = 0
+    this._lastRunFrameAt = 0
+    this._faceDir = 1
   }
 
   preload() {
-    // Put your monkey images in: public/assets/
-    this.load.image('monkey-standing', 'assets/monkey-standing.png')
-    this.load.image('monkey-jumping', 'assets/monkey-jumping.png')
-    this.load.image('monkey-grabbing', 'assets/monkey-grabbing.png')
-    this.load.image('monkey-walking-a', 'assets/monkey-walking-a.png')
-    this.load.image('monkey-walking-b', 'assets/monkey-walking-b.png')
+    this.load.on('loaderror', (file) => {
+      console.warn('Asset failed to load (will use fallbacks):', file.key, file.url)
+    })
+    // Put your monkey images in: public/assets/monkey/
+    this.load.image('monkey-standing', 'assets/monkey/monkey-standing.png')
+    this.load.image('monkey-run-right', 'assets/monkey/monkey-run.png')
+    this.load.image('monkey-run-right-2', 'assets/monkey/monkey-run-right-2.png')
+    this.load.image('monkey-run-left', 'assets/monkey/monkey-run-left.png')
+    this.load.image('monkey-run-left-2', 'assets/monkey/monkey-run-left-2.png')
+    this.load.image('monkey-jumping', 'assets/monkey/monkey-jump.png')
+    this.load.image('monkey-jump-left', 'assets/monkey/monkey-jump-left.png')
+    this.load.image('monkey-grabbing', 'assets/monkey/monkey-swing.png')
+    this.load.image('monkey-grab-left', 'assets/monkey/monkey-swing-left.png')
+    this.load.image('monkey-grab-1', 'assets/monkey/monkey-grab-1.png')
+    this.load.image('monkey-grab-2', 'assets/monkey/monkey-grab-2.png')
+    this.load.image('monkey-sick-1', 'assets/monkey/monkey-sick-1.png')
+    this.load.image('monkey-sick-2', 'assets/monkey/monkey-sick-2.png')
+    this.load.image('monkey-sick-3', 'assets/monkey/monkey-sick-3.png')
+    this.load.image('monkey-sick-4', 'assets/monkey/monkey-sick-4.png')
+    this.load.image('banana', 'assets/bananas/banana.png')
+    this.load.image('rotten-banana', 'assets/bananas/rotten-banana.png')
+    this.load.image('bamboo', 'assets/plants/bamboo.png')
+    this.load.image('liana', 'assets/plants/liana.png')
+    this.load.image('tree-crown', 'assets/plants/tree-crown.png')
 
     // Backgrounds: public/assets/backgrounds/
     this.load.image('jungle-bg', 'assets/backgrounds/jungle-background.png')
   }
 
   create() {
-    this.matter.world.setBounds(0, 0, this.worldW, this.worldH, 64, true, true, true, true)
+    // Debug: if you see this text, the scene is running (remove once fixed)
+    this.add.text(16, 16, 'Scene started', { fontSize: '14px', color: '#88ff88' }).setScrollFactor(0).setDepth(9999)
 
-    this._ensureMonkeyTextures()
+    try {
+      if (!this.matter || !this.matter.world) {
+        throw new Error('Matter physics not available on scene')
+      }
+      this.matter.world.setBounds(0, 0, this.worldW, this.worldH, 64, true, true, true, true)
 
-    this._drawBackground()
-    this._createGround()
-    this._createTrees()
-    this._createMonkey()
-    this._createHUD()
-    this._wireCollisions()
+      this._ensureMonkeyTextures()
+
+      this._drawBackground()
+      this._createGround()
+      this._createTrees()
+      this._createBananas()
+      this._createMonkey()
+      this._createHUD()
+      this._wireCollisions()
+    } catch (err) {
+      console.error('[GameScene] create() failed:', err)
+      this.add.text(20, 20, `Error: ${err.message}`, { fontSize: '16px', color: '#ff6b6b' }).setScrollFactor(0)
+      return
+    }
 
     this.cameras.main.setBounds(0, 0, this.worldW, this.worldH)
     this.cameras.main.startFollow(this.monkey, true, 0.08, 0.08)
     this.cameras.main.setZoom(1)
+    // Start camera at bottom of world so monkey and ground are visible from frame one
+    const cam = this.cameras.main
+    const maxScrollX = Math.max(0, this.worldW - cam.width)
+    const maxScrollY = Math.max(0, this.worldH - cam.height)
+    cam.setScroll(
+      Phaser.Math.Clamp(this.monkey.x - cam.width / 2, 0, maxScrollX),
+      Phaser.Math.Clamp(this.monkey.y - cam.height / 2, 0, maxScrollY)
+    )
 
     this.cursors = this.input.keyboard.createCursorKeys()
+
+    if (this.input?.keyboard) {
+      this.input.keyboard.removeAllListeners()
+      this.input.keyboard.enabled = true
+    }
 
     this.keys = this.input.keyboard.addKeys({
       d: Phaser.Input.Keyboard.KeyCodes.D,
@@ -69,16 +149,33 @@ class GameScene extends Phaser.Scene {
     this.input.keyboard.on('keydown-D', () => this._tryGrab())
     this.input.keyboard.on('keydown-SPACE', () => this._jumpOrRelease())
     this.input.keyboard.on('keydown-R', () => this.scene.restart())
+
+    this.game.events.on('focus', () => {
+      if (this.input?.keyboard) this.input.keyboard.enabled = true
+    })
   }
 
   update() {
     if (!this.monkey) return
+
+    if (!this.cursors && this.input?.keyboard) this.cursors = this.input.keyboard.createCursorKeys()
+    if (!this.keys && this.input?.keyboard) {
+      this.keys = this.input.keyboard.addKeys({
+        d: Phaser.Input.Keyboard.KeyCodes.D,
+        space: Phaser.Input.Keyboard.KeyCodes.SPACE,
+        r: Phaser.Input.Keyboard.KeyCodes.R
+      })
+    }
 
     if (this.monkey.y > this.worldH + 200) {
       this.scene.restart()
       return
     }
 
+    this._refreshGrounded()
+    this._updateSickState()
+    this._handleBambooClimb()
+    this._safetyResetStates()
     this._handleMonkeyMovement()
     this._updateMonkeyVisual()
 
@@ -87,6 +184,15 @@ class GameScene extends Phaser.Scene {
     this._updateTreeMarkers(nearest)
     this._drawRopes()
     this._updateHUD(nearest)
+
+    if (this.isGrabbing) {
+      this._handleLianaClimb()
+      this._syncGrabbedMonkey()
+    }
+
+    this._applyJumpBoost()
+    this._checkBananaOverlap()
+    this._flushBananaCleanup()
   }
 
   _drawBackground() {
@@ -126,10 +232,14 @@ class GameScene extends Phaser.Scene {
     // Procedural fallback so the monkey always shows up even without PNG assets.
     const required = [
       'monkey-standing',
+      'monkey-run-right',
+      'monkey-run-right-2',
+      'monkey-run-left',
+      'monkey-run-left-2',
       'monkey-jumping',
+      'monkey-jump-left',
       'monkey-grabbing',
-      'monkey-walking-a',
-      'monkey-walking-b'
+      'monkey-grab-left'
     ]
     if (required.every((k) => this.textures.exists(k))) return
 
@@ -150,10 +260,9 @@ class GameScene extends Phaser.Scene {
     const baseBody = (g) => {
       // Tail (behind)
       g.lineStyle(6, dark, 1)
-      g.beginPath()
-      g.moveTo(36, 42)
-      g.quadraticCurveTo(54, 52, 46, 62)
-      g.strokePath()
+      const tailPath = new Phaser.Curves.Path(36, 42)
+      tailPath.quadraticBezierTo(46, 62, 54, 52)
+      tailPath.draw(g)
 
       // Body + head
       g.fillStyle(brown, 1)
@@ -185,24 +294,13 @@ class GameScene extends Phaser.Scene {
       g.fillRoundedRect(35, 48, 7, 12, 5)
     })
 
-    make('monkey-walking-a', (g) => {
+    make('monkey-run-right', (g) => {
       baseBody(g)
       g.fillStyle(dark, 1)
-      // Arms swing slightly
-      g.fillRoundedRect(17, 32, 8, 16, 5)
-      g.fillRoundedRect(41, 28, 8, 18, 5)
-      // Legs stride
-      g.fillRoundedRect(24, 48, 8, 12, 5)
-      g.fillRoundedRect(37, 50, 6, 10, 5)
-    })
-
-    make('monkey-walking-b', (g) => {
-      baseBody(g)
-      g.fillStyle(dark, 1)
-      // Arms swing opposite
+      // Arms swing
       g.fillRoundedRect(17, 28, 8, 18, 5)
       g.fillRoundedRect(41, 32, 8, 16, 5)
-      // Legs stride opposite
+      // Legs stride
       g.fillRoundedRect(25, 50, 6, 10, 5)
       g.fillRoundedRect(36, 48, 8, 12, 5)
     })
@@ -218,7 +316,29 @@ class GameScene extends Phaser.Scene {
       g.fillRoundedRect(35, 46, 8, 10, 5)
     })
 
+    make('monkey-jump-left', (g) => {
+      baseBody(g)
+      g.fillStyle(dark, 1)
+      // Arms up
+      g.fillRoundedRect(18, 18, 8, 18, 5)
+      g.fillRoundedRect(40, 18, 8, 18, 5)
+      // Legs tucked
+      g.fillRoundedRect(26, 46, 8, 10, 5)
+      g.fillRoundedRect(35, 46, 8, 10, 5)
+    })
+
     make('monkey-grabbing', (g) => {
+      baseBody(g)
+      g.fillStyle(dark, 1)
+      // One arm up grabbing, one down
+      g.fillRoundedRect(40, 10, 8, 26, 5)
+      g.fillRoundedRect(18, 32, 8, 16, 5)
+      // Legs slightly tucked
+      g.fillRoundedRect(26, 47, 7, 11, 5)
+      g.fillRoundedRect(35, 47, 7, 11, 5)
+    })
+
+    make('monkey-grab-left', (g) => {
       baseBody(g)
       g.fillStyle(dark, 1)
       // One arm up grabbing, one down
@@ -240,38 +360,36 @@ class GameScene extends Phaser.Scene {
 
     const platformDefs = [
       { x: 320, y: 260, w: 340, h: 30 },
-      { x: 760, y: 220, w: 300, h: 30 },
-      { x: 1180, y: 280, w: 340, h: 30 },
-      { x: 1600, y: 230, w: 320, h: 30 },
-      { x: 2000, y: 260, w: 340, h: 30 }
+      { x: 900, y: 220, w: 300, h: 30 },
+      { x: 1480, y: 280, w: 340, h: 30 },
+      { x: 2060, y: 260, w: 340, h: 30 }
     ]
 
-    const { Body } = Phaser.Physics.Matter.Matter
-
+    let lowestPlatformY = -Infinity
     for (let i = 0; i < platformDefs.length; i++) {
       const p = platformDefs[i]
+      lowestPlatformY = Math.max(lowestPlatformY, p.y)
 
       this.matter.add.rectangle(p.x, p.y, p.w, p.h, {
         isStatic: true,
         friction: 0.25,
         restitution: 0.05
       })
+      this.platforms.push({ x: p.x, y: p.y, w: p.w, h: p.h })
 
-      // visuals: platform ("tree branch")
-      this.treesGfx.fillStyle(platformColor, 1)
-      this.treesGfx.fillRoundedRect(p.x - p.w / 2, p.y - p.h / 2, p.w, p.h, 10)
+      // visuals: platform ("tree branch") - transparent (physics only)
 
-      // leaf blobs on top
-      this.treesGfx.fillStyle(leafColor, 0.9)
-      this.treesGfx.fillCircle(p.x - p.w * 0.25, p.y - 34, 22)
-      this.treesGfx.fillCircle(p.x, p.y - 42, 26)
-      this.treesGfx.fillCircle(p.x + p.w * 0.25, p.y - 34, 22)
+      // tree crown overlay
+      if (this.textures.exists('tree-crown')) {
+        const crown = this.add.image(p.x, p.y - 46, 'tree-crown').setDepth(6)
+        const scale = p.w / crown.width
+        crown.setScale(scale)
+      }
 
       // Blue pivot point: at bottom of the brown platform
       const pivotX = p.x
       const pivotY = p.y + p.h / 2
-      const pivotBody = this.matter.add.circle(pivotX, pivotY, 6, { isStatic: true })
-      const pivotMarker = this.add.circle(pivotX, pivotY, 6, 0x38bdf8, 1).setDepth(10)
+      const pivotBody = this.matter.add.circle(pivotX, pivotY, 6, { isStatic: true, isSensor: true })
 
       // Yellow bob point: end of liana under the platform
       const desiredLen = this.groundY - pivotY - 45
@@ -281,6 +399,7 @@ class GameScene extends Phaser.Scene {
 
       const bobMarker = this.add.circle(bobStartX, bobStartY, 8, 0xfde047, 1).setDepth(11)
       bobMarker.setStrokeStyle(2, 0x111827, 0.45)
+      bobMarker.setVisible(false)
 
       const bob = this.matter.add.gameObject(bobMarker, {
         shape: { type: 'circle', radius: 8 },
@@ -289,31 +408,57 @@ class GameScene extends Phaser.Scene {
         restitution: 0.05,
         density: 0.001
       })
-
-      // Liana constraint: pivot -> bob
-      const liana = this.matter.add.constraint(pivotBody, bob.body, len, 0.92, { damping: 0.005 })
-
-      // Give it an initial push so it starts swinging.
-      bob.setVelocity((i % 2 === 0 ? 6 : -6), 0)
+      bob.setSensor(true)
 
       // Store tree/liana setup
+      let lianaSprite = null
+      let lianaWidth = 24
+      if (this.textures.exists('liana')) {
+        const img = this.textures.get('liana')?.getSourceImage()
+        lianaWidth = Math.max(4, img?.width ?? 24)
+        lianaSprite = this.add.tileSprite(pivotX, pivotY, lianaWidth, len, 'liana')
+          .setOrigin(0.5, 0)
+          .setDepth(2)
+          .setTileScale(1, 1)
+      }
+
       this.trees.push({
         pivotBody,
-        pivotMarker,
         bob,
-        liana,
+        lianaSprite,
+        lianaWidth,
         len,
+        baseLen: len,
         phaseOffset: i * 0.7,
         // used for highlight
         defaultBobColor: 0xfde047
       })
 
-      // Keep pivot marker glued (static body doesn't move, but keep consistent)
-      pivotMarker.x = pivotX
-      pivotMarker.y = pivotY
+    }
 
-      // Ensure constraint length doesn't drift if bob gets nudged violently
-      Body.setInertia(bob.body, Infinity)
+    // Bamboo between two random platforms
+    if (this.platforms.length >= 2 && this.textures.exists('bamboo')) {
+      const i = Phaser.Math.Between(0, this.platforms.length - 2)
+      const a = this.platforms[i]
+      const b = this.platforms[i + 1]
+      const leftEdge = a.x + a.w / 2 + 20
+      const rightEdge = b.x - b.w / 2 - 20
+      const bx = rightEdge > leftEdge ? Phaser.Math.Between(leftEdge, rightEdge) : (a.x + b.x) / 2
+
+      const lowestY = lowestPlatformY > 0 ? lowestPlatformY : a.y
+      const targetH = Math.max(120, (this.groundY - lowestY) * 0.9)
+      const img = this.textures.get('bamboo')?.getSourceImage()
+      const bambooW = img?.width ?? 32
+      const bamboo = this.add.tileSprite(bx, this.groundY, bambooW, targetH, 'bamboo').setDepth(6)
+      bamboo.setOrigin(0.5, 1)
+      this.bambooSprite = bamboo
+
+      // Visualize bamboo plateau (70px wide) with a red line
+      const plateauW = 70
+      const topY = this.bambooSprite.y - this.bambooSprite.displayHeight
+      this._bambooTopLine = this.add.graphics().setDepth(8)
+      this._bambooTopLine.lineStyle(3, 0xef4444, 0)
+      this._bambooTopLine.lineBetween(bx - plateauW / 2, topY, bx + plateauW / 2, topY)
     }
   }
 
@@ -339,36 +484,145 @@ class GameScene extends Phaser.Scene {
     this.monkey.setFixedRotation()
   }
 
+  _createBananas() {
+    if (!this.textures.exists('banana')) return
+
+    const bananaSize = 48
+    const bananaRadius = bananaSize * 0.45
+    const minBananaDist = 30
+
+    const isTooCloseToPlatforms = (x, y) => {
+      for (const p of this.platforms) {
+        const left = p.x - p.w / 2 - minBananaDist
+        const right = p.x + p.w / 2 + minBananaDist
+        const top = p.y - p.h / 2 - minBananaDist
+        const bottom = p.y + p.h / 2 + minBananaDist
+        if (x >= left && x <= right && y >= top && y <= bottom) return true
+      }
+      return false
+    }
+
+    const isTooCloseToOtherBananas = (x, y) => {
+      for (const b of this.bananas) {
+        const dx = b.x - x
+        const dy = b.y - y
+        if (Math.hypot(dx, dy) < bananaSize + minBananaDist) return true
+      }
+      return false
+    }
+
+    const addBanana = (x, y, type = 'banana') => {
+      const img = this.add.image(x, y, type).setDepth(12)
+      img.setDisplaySize(bananaSize, bananaSize)
+      const banana = this.matter.add.gameObject(img, {
+        isStatic: true,
+        isSensor: true,
+        shape: { type: 'circle', radius: bananaRadius }
+      })
+      banana.body.label = type
+      banana.setData('collected', false)
+      banana.setData('type', type)
+      banana.setData('radius', bananaRadius)
+      this.bananas.push(banana)
+    }
+
+    // One banana per platform
+    for (const p of this.platforms) {
+      const x = p.x
+      const y = p.y - p.h / 2 - bananaSize * 0.6
+      if (!isTooCloseToOtherBananas(x, y)) addBanana(x, y)
+    }
+
+    // Random bananas across the level
+    const randomCount = 12
+    for (let i = 0; i < randomCount; i++) {
+      let placed = false
+      for (let attempt = 0; attempt < 25 && !placed; attempt++) {
+        const x = Phaser.Math.Between(100, this.worldW - 100)
+        const y = Phaser.Math.Between(140, Math.max(160, this.groundY - this._monkeySize * 2.5))
+        if (isTooCloseToPlatforms(x, y)) continue
+        if (isTooCloseToOtherBananas(x, y)) continue
+        addBanana(x, y)
+        placed = true
+      }
+    }
+
+    // Exactly two rotten bananas
+    if (this.textures.exists('rotten-banana')) {
+      let placedCount = 0
+      for (let attempt = 0; attempt < 80 && placedCount < 2; attempt++) {
+        const x = Phaser.Math.Between(120, this.worldW - 120)
+        const y = Phaser.Math.Between(140, Math.max(160, this.groundY - this._monkeySize * 2.5))
+        if (isTooCloseToPlatforms(x, y)) continue
+        if (isTooCloseToOtherBananas(x, y)) continue
+        addBanana(x, y, 'rotten-banana')
+        placedCount++
+      }
+    }
+  }
+
   _createHUD() {
     this.hud = this.add
       .text(16, 14, '', {
         fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif',
         fontSize: '14px',
-        color: '#e5e7eb'
+        color: '#000000'
       })
       .setScrollFactor(0)
       .setDepth(1000)
+
+    const cam = this.cameras.main
+    const boxW = 140
+    const boxH = 44
+    const pad = 16
+    const x = cam.width - boxW - pad
+    const y = pad
+
+    this.bananaCounterBg = this.add.graphics().setScrollFactor(0).setDepth(1000)
+    this.bananaCounterBg.fillStyle(0x111827, 0.8)
+    this.bananaCounterBg.fillRoundedRect(x, y, boxW, boxH, 10)
+    this.bananaCounterBg.lineStyle(2, 0x1f2937, 0.9)
+    this.bananaCounterBg.strokeRoundedRect(x, y, boxW, boxH, 10)
+
+    this.bananaCounterIcon = this.add.image(x + 24, y + boxH / 2, 'banana').setScrollFactor(0).setDepth(1001)
+    this.bananaCounterIcon.setDisplaySize(24, 24)
+
+    this.bananaCounterText = this.add
+      .text(x + 48, y + 10, '0', {
+        fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif',
+        fontSize: '18px',
+        color: '#fde68a'
+      })
+      .setScrollFactor(0)
+      .setDepth(1001)
   }
 
   _updateHUD(nearest) {
-    const state = this.grabConstraint ? 'på lian' : this._canJump() ? 'på mark' : 'i luften'
+    const state = this.isGrabbing ? 'på lian' : this._canJump() ? 'på mark' : 'i luften'
     const nearTxt = nearest ? `nära lian: ja` : 'nära lian: nej'
     this.hud.setText(
       [
         'Monkey Swing (prototype)',
         'Piltangenter = vänster/höger   D = grabba gul punkt   Space = hoppa / släpp+hoppa   R = restart',
-        `state: ${state}   ${nearTxt}`
+        `state: ${state}   ${nearTxt}`,
+        `monkey-state: ${this._monkeyVisualKey ?? 'n/a'}`
       ].join('\n')
     )
   }
 
   _handleMonkeyMovement() {
     if (!this.cursors) return
-    if (this.grabConstraint) return // when attached to liana, movement is physics-driven
+    if (this.isGrabbing) return // when attached to liana, movement is physics-driven
+    if (this._isClimbingBamboo && !this._isOnBambooTop) return
+    if (this._isSick) {
+      if (this._sickImmobilizeUntil > (this.time?.now ?? 0)) this.monkey.setVelocityX(0)
+      this.monkey.setVelocityX(0)
+      return
+    }
 
     const left = this.cursors.left?.isDown
     const right = this.cursors.right?.isDown
-    const onGround = this._canJump()
+    const onGround = this._isGrounded()
 
     const vx = this.monkey.body.velocity.x
     const maxSpeed = onGround ? 7 : 5.5
@@ -392,25 +646,77 @@ class GameScene extends Phaser.Scene {
 
     const hasTextures = [
       'monkey-standing',
+      'monkey-run-right',
+      'monkey-run-right-2',
+      'monkey-run-left',
+      'monkey-run-left-2',
       'monkey-jumping',
+      'monkey-jump-left',
       'monkey-grabbing',
-      'monkey-walking-a',
-      'monkey-walking-b'
+      'monkey-grab-left',
+      'monkey-grab-1',
+      'monkey-grab-2',
+      'monkey-sick-1',
+      'monkey-sick-2',
+      'monkey-sick-3',
+      'monkey-sick-4'
     ].every((k) => this.textures.exists(k))
     if (!hasTextures) return
 
-    const onGround = this._canJump()
+    const onGround = this._isGrounded()
     const vx = this.monkey.body.velocity.x
     const absVx = Math.abs(vx)
 
     let key = 'monkey-standing'
-    if (this.grabConstraint) key = 'monkey-grabbing'
-    else if (!onGround) key = 'monkey-jumping'
+    const now = this.time?.now ?? 0
+
+    if (this._isSick && this._sickImmobilizeUntil > now) {
+      const frame = Math.floor((now - this._sickAnimStart) / 375) % 4
+      key = ['monkey-sick-1', 'monkey-sick-2', 'monkey-sick-3', 'monkey-sick-4'][frame]
+    }
+    else if (this.isGrabbing) {
+      const t = this.grabbedTree
+      const left =
+        t && t.bob?.body && t.pivotBody ? t.bob.body.position.x < t.pivotBody.position.x : this._faceDir < 0
+      key = left ? 'monkey-grab-left' : 'monkey-grabbing'
+    }
+    else if (this._isClimbingBamboo) {
+      if (this._bambooGrabActive) {
+        if (!this._lastBambooGrabFrameAt) this._lastBambooGrabFrameAt = now
+        if (now - this._lastBambooGrabFrameAt >= 100) {
+          this._lastBambooGrabFrameAt = now
+          this._bambooGrabFrame = this._bambooGrabFrame === 1 ? 2 : 1
+        }
+      }
+      key = this._bambooGrabFrame === 1 ? 'monkey-grab-1' : 'monkey-grab-2'
+    }
+    else if (this._isOnBambooTop) {
+      key = 'monkey-standing'
+    }
+    else if (this._isOnTreePlatform && absVx <= 1.2) {
+      key = 'monkey-standing'
+    }
+    else if (!onGround) {
+      if (vx < -0.1 || this._faceDir < 0) key = 'monkey-jump-left'
+      else key = 'monkey-jumping'
+    }
     else if (absVx > 1.2) {
-      this._walkPhase += 0.22 + Phaser.Math.Clamp(absVx * 0.02, 0, 0.25)
-      key = Math.floor(this._walkPhase) % 2 === 0 ? 'monkey-walking-a' : 'monkey-walking-b'
+      const now2 = now
+      if (!this._lastRunFrameAt) this._lastRunFrameAt = now2
+      if (now2 - this._lastRunFrameAt >= 100) {
+        this._lastRunFrameAt = now2
+        this._walkPhase = (this._walkPhase + 1) % 2
+      }
+      const frame = this._walkPhase % 2 === 0 ? 1 : 2
+      if (vx < 0) key = frame === 1 ? 'monkey-run-left' : 'monkey-run-left-2'
+      else key = frame === 1 ? 'monkey-run-right' : 'monkey-run-right-2'
     } else {
       this._walkPhase = 0
+      this._lastRunFrameAt = 0
+    }
+    // Force standing when grounded (ground or any plateau).
+    if (onGround && !this.isGrabbing && !(this._isSick && this._sickImmobilizeUntil > now)) {
+      key = absVx > 1.2 ? key : 'monkey-standing'
     }
 
     if (key !== this._monkeyVisualKey && typeof this.monkey.setTexture === 'function') {
@@ -420,17 +726,31 @@ class GameScene extends Phaser.Scene {
     }
 
     if (typeof this.monkey.setFlipX === 'function') {
-      if (absVx > 0.15) this.monkey.setFlipX(vx < 0)
+      this.monkey.setFlipX(false)
     }
+
+    if (absVx > 0.15) this._faceDir = vx < 0 ? -1 : 1
   }
 
   _wireCollisions() {
     const isMonkeyAndGround = (a, b) =>
       (a === this.monkey.body && b === this.groundBody) || (b === this.monkey.body && a === this.groundBody)
+    const isMonkeyAndBanana = (a, b) =>
+      (a === this.monkey.body && (b.label === 'banana' || b.label === 'rotten-banana')) ||
+      (b === this.monkey.body && (a.label === 'banana' || a.label === 'rotten-banana'))
 
     this.matter.world.on('collisionstart', (event) => {
       for (const pair of event.pairs) {
-        if (isMonkeyAndGround(pair.bodyA, pair.bodyB)) this.monkeyContactsWithGround++
+        if (isMonkeyAndGround(pair.bodyA, pair.bodyB)) {
+          this.monkeyContactsWithGround++
+          this._lastGroundedAt = this.time?.now ?? 0
+        }
+        if (isMonkeyAndBanana(pair.bodyA, pair.bodyB)) {
+          const bananaBody =
+            pair.bodyA.label === 'banana' || pair.bodyA.label === 'rotten-banana' ? pair.bodyA : pair.bodyB
+          if (bananaBody.label === 'rotten-banana') this._collectRottenBanana(bananaBody.gameObject)
+          else this._collectBanana(bananaBody.gameObject)
+        }
       }
     })
 
@@ -443,26 +763,146 @@ class GameScene extends Phaser.Scene {
     })
   }
 
+  _collectBanana(banana) {
+    if (!banana || banana.getData('collected')) return
+    banana.setData('collected', true)
+    banana.setVisible(false)
+    banana.body && (banana.body.isSensor = true)
+    this._bananaCleanup.push(banana)
+    this.bananaScore += 1
+    if (this.bananaCounterText) this.bananaCounterText.setText(String(this.bananaScore))
+  }
+
+  _collectRottenBanana(banana) {
+    if (!banana || banana.getData('collected')) return
+    banana.setData('collected', true)
+    banana.setVisible(false)
+    banana.body && (banana.body.isSensor = true)
+    this._bananaCleanup.push(banana)
+    this.bananaScore = Math.max(0, this.bananaScore - 3)
+    if (this.bananaCounterText) this.bananaCounterText.setText(String(this.bananaScore))
+    this._enterSickState()
+  }
+
+  _enterSickState() {
+    if (this._isSick) return
+    this._isSick = true
+    this._sickImmobilizeUntil = 0
+    this._sickAnimStart = 0
+
+    if (this.isGrabbing) {
+      // Drop from current position on the liana.
+      const t = this.grabbedTree
+      if (t?.bob?.body?.position && t?.pivotBody?.position) {
+        const px = t.pivotBody.position.x
+        const py = t.pivotBody.position.y
+        const bx = t.bob.body.position.x
+        const by = t.bob.body.position.y
+        const gx = px + (bx - px) * this.grabRatio
+        const gy = py + (by - py) * this.grabRatio
+        this.monkey.setPosition(gx, gy)
+      }
+      this._releaseGrab()
+    }
+    if (this._isClimbingBamboo) {
+      this._isClimbingBamboo = false
+      this.monkey.setIgnoreGravity(false)
+    }
+    if (this._isOnBambooTop) {
+      this._isOnBambooTop = false
+      this.monkey.setIgnoreGravity(false)
+    }
+    this.monkey.setStatic(false)
+    this.monkey.setSensor(false)
+    this.monkey.setVelocity(0, 0)
+  }
+
+  _updateSickState() {
+    if (!this._isSick) return
+    const now = this.time?.now ?? 0
+
+    if (this._sickImmobilizeUntil === 0 && this._isGrounded()) {
+      this._sickImmobilizeUntil = now + 3000
+      this._sickAnimStart = now
+    }
+
+    if (this._sickImmobilizeUntil > 0 && now >= this._sickImmobilizeUntil) {
+      this._isSick = false
+      this._sickImmobilizeUntil = 0
+      this._sickAnimStart = 0
+    }
+  }
+
+  _checkBananaOverlap() {
+    if (!this.monkey) return
+    const mx = this.monkey.x
+    const my = this.monkey.y
+    const mR = this._monkeySize * 0.5
+    for (const b of this.bananas) {
+      if (!b || b.getData('collected') || !b.body || !b.body.position) continue
+      const r = b.getData('radius') ?? 20
+      const dx = b.body.position.x - mx
+      const dy = b.body.position.y - my
+      if (dx * dx + dy * dy <= (mR + r) * (mR + r)) {
+        const type = b.getData('type') ?? 'banana'
+        if (type === 'rotten-banana') this._collectRottenBanana(b)
+        else this._collectBanana(b)
+      }
+    }
+  }
+
+  _flushBananaCleanup() {
+    if (this._bananaCleanup.length === 0) return
+    for (const b of this._bananaCleanup) {
+      if (b && b.body) this.matter.world.remove(b.body)
+      if (b && b.destroy) b.destroy()
+    }
+    this._bananaCleanup = []
+    this.bananas = this.bananas.filter((b) => b && !b.getData('collected'))
+  }
+
+  _isGrounded() {
+    if (this.monkeyContactsWithGround > 0) return true
+    const now = this.time?.now ?? 0
+    return now - this._lastGroundedAt <= 150
+  }
+
   _canJump() {
-    return this.monkeyContactsWithGround > 0
+    return this._isGrounded()
   }
 
   _jumpOrRelease() {
-    if (this.grabConstraint) {
+    if (this._isSick) return
+    if (this._isClimbingBamboo) {
+      this._isClimbingBamboo = false
+      this.monkey.setIgnoreGravity(false)
+      this._jumpImpulse(false)
+      this._extraJumpAvailable = true
+      return
+    }
+    if (this.isGrabbing) {
       this._jumpFromLiana()
+      this._extraJumpAvailable = true
       return
     }
 
     if (this._canJump()) {
       this._jumpImpulse(false)
+      this._extraJumpAvailable = true
+      return
+    }
+
+    if (this._extraJumpAvailable) {
+      this._jumpImpulse(false)
+      this._extraJumpAvailable = false
     }
   }
 
   _jumpFromLiana() {
-    if (!this.grabConstraint || !this.grabbedTree) return
+    if (!this.isGrabbing || !this.grabbedTree) return
 
     const t = this.grabbedTree
-    const pivot = t.pivotBody?.position ?? { x: t.pivotMarker.x, y: t.pivotMarker.y }
+    const pivot = t.pivotBody.position
     const bob = t.bob?.body?.position ?? { x: t.bob.x, y: t.bob.y }
 
     const rx = bob.x - pivot.x
@@ -471,66 +911,111 @@ class GameScene extends Phaser.Scene {
     const ux = rx / rLen
     const uy = ry / rLen
 
-    // Two tangents; pick the one matching our current movement direction.
-    const t1x = -uy
-    const t1y = ux
-    const t2x = uy
-    const t2y = -ux
-
-    const vx = this.monkey.body.velocity.x
-    const vy = this.monkey.body.velocity.y
-    const d1 = t1x * vx + t1y * vy
-    const useT1 = d1 >= 0
-    const tx = useT1 ? t1x : t2x
-    const ty = useT1 ? t1y : t2y
-
-    // Tilt 15 degrees upward (towards -Y) from the tangent direction.
-    const a = Phaser.Math.DegToRad(15)
-    const upx = 0
-    const upy = -1
-    let dirx = tx * Math.cos(a) + upx * Math.sin(a)
-    let diry = ty * Math.cos(a) + upy * Math.sin(a)
-    const dLen = Math.hypot(dirx, diry) || 1
-    dirx /= dLen
-    diry /= dLen
-
-    const speed = Math.max(4, Math.hypot(vx, vy))
+    // Liana angle: 0 = up, 90 = right, 180 = down, 270 = left.
+    const angleUp = (Phaser.Math.RadToDeg(Math.atan2(rx, -ry)) + 360) % 360
+    const jumpAngle = angleUp <= 179 ? angleUp - 90 : angleUp + 90
+    const a = Phaser.Math.DegToRad(jumpAngle)
+    const dirx = Math.sin(a)
+    const diry = -Math.cos(a)
 
     this._releaseGrab()
-    this.monkey.setVelocity(dirx * speed, diry * speed)
+    this._jumpImpulse(false, dirx, diry, 2)
   }
 
-  _jumpImpulse(fromLiana) {
+  _jumpImpulse(fromLiana, dirx = 0, diry = -1, jumpScale = 1) {
     // A simple jump impulse. If jumping from liana, keep horizontal momentum.
     const vx = this.monkey.body.velocity.x
     const boostX = fromLiana ? Phaser.Math.Clamp(vx * 0.0025, -0.02, 0.02) : 0
-    this.monkey.applyForce({ x: boostX, y: -0.05 })
+    const jumpHeight = this._monkeySize * 2 * jumpScale
+    const dLen = Math.hypot(dirx, diry) || 1
+    dirx /= dLen
+    diry /= dLen
+    this._jumpStartX = this.monkey.x
+    this._jumpStartY = this.monkey.y
+    this._jumpDirX = dirx
+    this._jumpDirY = diry
+    this._jumpTargetAlong = jumpHeight
+    this._jumpTargetY = this.monkey.y - jumpHeight
+    this._jumpBoostUntil = (this.time?.now ?? 0) + 320
+    this._jumpBoostActive = true
+    if (!fromLiana) {
+      const left = this.cursors?.left?.isDown
+      const right = this.cursors?.right?.isDown
+      const dir = left && !right ? -1 : right && !left ? 1 : this._faceDir || 1
+      const horizSpeed = 4.5
+      this.monkey.setVelocityX(dir * horizSpeed)
+    }
+    const baseSpeed = 6 * jumpScale
+    this.monkey.setVelocity(dirx * baseSpeed, diry * baseSpeed)
+    this.monkey.applyForce({ x: boostX + dirx * 0.02 * jumpScale, y: diry * 0.02 * jumpScale })
   }
 
   _tryGrab() {
-    if (this.grabConstraint) return
+    if (this._isSick) return
+    if (this.isGrabbing) return
 
-    const nearest = this._nearestBobWithin(70)
-    if (!nearest) return
+    const maxDist = 70
+    let best = null
+    let bestD = maxDist
+    let bestRatio = 1
 
-    // Snap to the bob and match its velocity so the liana keeps its direction/momentum.
-    const bx = nearest.bob.body.position.x
-    const by = nearest.bob.body.position.y
-    this.monkey.setPosition(bx, by)
-    this.monkey.setVelocity(nearest.bob.body.velocity.x, nearest.bob.body.velocity.y)
+    for (const t of this.trees) {
+      const px = t.pivotBody.position.x
+      const py = t.pivotBody.position.y
+      const bx = t.bob.body.position.x
+      const by = t.bob.body.position.y
+      const vx = bx - px
+      const vy = by - py
+      const len2 = vx * vx + vy * vy || 1
+      const wx = this.monkey.x - px
+      const wy = this.monkey.y - py
+      let ratio = (wx * vx + wy * vy) / len2
+      ratio = Phaser.Math.Clamp(ratio, 0, 1)
+      const cx = px + vx * ratio
+      const cy = py + vy * ratio
+      const d = Phaser.Math.Distance.Between(this.monkey.x, this.monkey.y, cx, cy)
+      if (d < bestD) {
+        best = t
+        bestD = d
+        bestRatio = ratio
+      }
+    }
 
-    // Grab by attaching monkey to the liana end (yellow bob).
-    this.grabConstraint = this.matter.add.constraint(this.monkey.body, nearest.bob.body, 0, 0.95, {
-      damping: 0.02
-    })
-    this.grabbedTree = nearest
+    if (!best) return
+
+    if (this._isClimbingBamboo) {
+      this._isClimbingBamboo = false
+      this.monkey.setIgnoreGravity(false)
+    }
+    if (this._isOnBambooTop) {
+      this._isOnBambooTop = false
+      this.monkey.setIgnoreGravity(false)
+    }
+
+    const gx = best.pivotBody.position.x + (best.bob.body.position.x - best.pivotBody.position.x) * bestRatio
+    const gy = best.pivotBody.position.y + (best.bob.body.position.y - best.pivotBody.position.y) * bestRatio
+    this.monkey.setPosition(gx, gy)
+    this.monkey.setVelocity(best.bob.body.velocity.x, best.bob.body.velocity.y)
+
+    // Visually attach the monkey to the liana end without affecting its physics.
+    this.monkey.setStatic(true)
+    this.monkey.setSensor(true)
+    this.monkey.setIgnoreGravity(true)
+    this.monkey.setVelocity(0, 0)
+    this._jumpBoostActive = false
+    this.isGrabbing = true
+    this.grabbedTree = best
+    this.grabRatio = bestRatio
   }
 
   _releaseGrab() {
-    if (!this.grabConstraint) return
-    this.matter.world.removeConstraint(this.grabConstraint)
-    this.grabConstraint = null
+    if (!this.isGrabbing) return
+    this.monkey.setStatic(false)
+    this.monkey.setSensor(false)
+    this.monkey.setIgnoreGravity(false)
+    this.isGrabbing = false
     this.grabbedTree = null
+    this.grabRatio = 1
   }
 
   _nearestBobWithin(maxDist) {
@@ -546,11 +1031,316 @@ class GameScene extends Phaser.Scene {
     return best
   }
 
+  _syncGrabbedMonkey() {
+    if (!this.grabbedTree) return
+    const px = this.grabbedTree.pivotBody.position.x
+    const py = this.grabbedTree.pivotBody.position.y
+    const bx = this.grabbedTree.bob.body.position.x
+    const by = this.grabbedTree.bob.body.position.y
+    const gx = px + (bx - px) * this.grabRatio
+    const gy = py + (by - py) * this.grabRatio
+    this.monkey.setPosition(gx, gy)
+    this.monkey.setVelocity(this.grabbedTree.bob.body.velocity.x, this.grabbedTree.bob.body.velocity.y)
+  }
+
+  _handleLianaClimb() {
+    if (!this.cursors) return
+    if (this._isSick) return
+    const up = this.cursors.up?.isDown
+    const down = this.cursors.down?.isDown
+    if (!up && !down) return
+
+    const dt = (this.game?.loop?.delta ?? 16) / 1000
+    const speed = 0.6 // ratio units per second
+    const dir = up && !down ? -1 : down && !up ? 1 : 0
+    if (dir === 0) return
+
+    if (down && this.grabRatio >= 0.98) {
+      const t = this.grabbedTree
+      if (t?.bob?.body?.position && t?.pivotBody?.position) {
+        this.grabRatio = 1
+        const px = t.pivotBody.position.x
+        const py = t.pivotBody.position.y
+        const bx = t.bob.body.position.x
+        const by = t.bob.body.position.y
+        if (Number.isFinite(px) && Number.isFinite(py) && Number.isFinite(bx) && Number.isFinite(by)) {
+          this.monkey.setPosition(bx, by)
+          this.monkey.setVelocity(t.bob.body.velocity.x, t.bob.body.velocity.y)
+        }
+      }
+      this._releaseGrab()
+      this.monkey.setIgnoreGravity(false)
+      this.monkey.setStatic(false)
+      return
+    }
+
+    this.grabRatio = Phaser.Math.Clamp(this.grabRatio + dir * speed * dt, 0.08, 1)
+  }
+
+  _isMonkeyOnBamboo() {
+    if (!this.bambooSprite) return false
+    const pad = 8
+    const left = this.bambooSprite.x - this.bambooSprite.displayWidth / 2 - pad
+    const right = this.bambooSprite.x + this.bambooSprite.displayWidth / 2 + pad
+    const top = this.bambooSprite.y - this.bambooSprite.displayHeight
+    const bottom = this.bambooSprite.y
+    const cap = this._monkeySize * 0.5
+    return this.monkey.x >= left && this.monkey.x <= right && this.monkey.y >= top - cap && this.monkey.y <= bottom
+  }
+
+  _bambooSideBounds() {
+    const pad = 8
+    const left = this.bambooSprite.x - this.bambooSprite.displayWidth / 2 - pad
+    const right = this.bambooSprite.x + this.bambooSprite.displayWidth / 2 + pad
+    return { left, right }
+  }
+
+  _bambooTopBounds() {
+    const top = this.bambooSprite.y - this.bambooSprite.displayHeight
+    const plateauW = 70
+    const left = this.bambooSprite.x - plateauW / 2
+    const right = this.bambooSprite.x + plateauW / 2
+    return { top, left, right }
+  }
+
+  _handleBambooClimb() {
+    if (!this.cursors || !this.monkey) return
+    if (this._isSick) return
+    if (this.isGrabbing) return
+    const up = this.cursors.up?.isDown
+    const down = this.cursors.down?.isDown
+    const onBamboo = this._isMonkeyOnBamboo()
+
+    if (!onBamboo) {
+      if (this._isClimbingBamboo) {
+        this._isClimbingBamboo = false
+        this.monkey.setIgnoreGravity(false)
+      }
+      if (this._isOnBambooTop) {
+        this._isOnBambooTop = false
+        this.monkey.setIgnoreGravity(false)
+      }
+      this._bambooGrabActive = false
+      return
+    }
+
+    if (!this._isClimbingBamboo && !up) {
+      // Do not auto-stick to bamboo. Only start climbing when pressing up.
+      return
+    }
+
+    if (!up && !down) {
+      // If already climbing, stay in place with no gravity.
+      if (this._isClimbingBamboo) {
+        this.monkey.setIgnoreGravity(true)
+        this.monkey.setVelocityX(0)
+        this.monkey.setVelocityY(0)
+      }
+      this._bambooGrabActive = false
+      return
+    }
+
+    const top = this.bambooSprite.y - this.bambooSprite.displayHeight
+    const bottom = this.bambooSprite.y
+    const minY = top - this._monkeySize / 2
+    const maxY = bottom - this._monkeySize / 2
+    const { left, right } = this._bambooSideBounds()
+
+    this._isClimbingBamboo = true
+    this._isOnBambooTop = false
+    this._bambooGrabActive = true
+    this.monkey.setStatic(false)
+    this.monkey.setIgnoreGravity(true)
+    const leftKey = this.cursors.left?.isDown
+    const rightKey = this.cursors.right?.isDown
+    let vx = 0
+    if (leftKey && !rightKey) vx = -3
+    else if (rightKey && !leftKey) vx = 3
+    this.monkey.setVelocityX(vx)
+
+    if (up && !down) this.monkey.setVelocityY(-4)
+    else if (down && !up) this.monkey.setVelocityY(4)
+    else this.monkey.setVelocityY(0)
+
+    if (this.monkey.y < minY) this.monkey.setPosition(this.monkey.x, minY)
+    if (this.monkey.y > maxY) {
+      this.monkey.setPosition(this.monkey.x, maxY)
+      // Reaching the bottom lets go of the bamboo so movement resumes.
+      this._isClimbingBamboo = false
+      this.monkey.setIgnoreGravity(false)
+      this.monkey.setVelocityY(0)
+      this._bambooGrabActive = false
+    }
+    if (this.monkey.x < left) this.monkey.setPosition(left, this.monkey.y)
+    if (this.monkey.x > right) this.monkey.setPosition(right, this.monkey.y)
+
+    const topThreshold = minY + this._monkeySize * 0.03
+    if (this.monkey.y <= topThreshold) {
+      this._isClimbingBamboo = false
+      this._isOnBambooTop = true
+      this._bambooGrabActive = false
+      this.monkey.setIgnoreGravity(false)
+      this.monkey.setVelocity(0, 0)
+      this.monkey.setPosition(this.monkey.x, minY)
+    }
+  }
+
+  _safetyResetStates() {
+    if (!this.monkey) return
+
+    // If bamboo flags are set but we're not on bamboo anymore, clear them.
+    if ((this._isClimbingBamboo || this._isOnBambooTop) && !this._isMonkeyOnBamboo()) {
+      this._isClimbingBamboo = false
+      this._isOnBambooTop = false
+      this.monkey.setIgnoreGravity(false)
+    }
+
+    // If grabbing state is inconsistent, release.
+    if (this.isGrabbing && !this.grabbedTree) {
+      this._releaseGrab()
+    }
+
+    // Ensure we aren't stuck static/sensor unless actively grabbing or climbing.
+    if (!this.isGrabbing && !this._isClimbingBamboo && !this._isOnBambooTop) {
+      if (this.monkey.body.isStatic) this.monkey.setStatic(false)
+      this.monkey.setIgnoreGravity(false)
+      this.monkey.setSensor(false)
+    }
+
+    // If any movement input is pressed, forcefully unstick.
+    if (this.cursors) {
+      const anyMove =
+        this.cursors.left?.isDown ||
+        this.cursors.right?.isDown ||
+        this.cursors.up?.isDown ||
+        this.cursors.down?.isDown
+      if (anyMove && !this.isGrabbing && !this._isClimbingBamboo) {
+        if (this.monkey.body.isStatic) this.monkey.setStatic(false)
+        this.monkey.setIgnoreGravity(false)
+        this.monkey.setSensor(false)
+      }
+    }
+  }
+
+  _refreshGrounded() {
+    const monkeyBottom = this.monkey.y + this._monkeySize / 2
+    if (monkeyBottom >= this.groundY - 2 && this.monkey.body.velocity.y >= 0) {
+      this._lastGroundedAt = this.time?.now ?? 0
+      this._extraJumpAvailable = false
+      this._isOnTreePlatform = false
+      return
+    }
+
+    if (this.bambooSprite) {
+      const { top, left, right } = this._bambooTopBounds()
+      if (
+        monkeyBottom >= top - 2 &&
+        monkeyBottom <= top + 4 &&
+        this.monkey.x >= left &&
+        this.monkey.x <= right &&
+        this.monkey.body.velocity.y >= 0
+      ) {
+        this._lastGroundedAt = this.time?.now ?? 0
+        this._extraJumpAvailable = false
+        this._isOnTreePlatform = false
+        this._isOnBambooTop = true
+        this._isClimbingBamboo = false
+        this.monkey.setIgnoreGravity(false)
+        this.monkey.setVelocityY(0)
+        this.monkey.setPosition(this.monkey.x, top - this._monkeySize / 2)
+        return
+      }
+    }
+
+    for (const p of this.platforms) {
+      const top = p.y - p.h / 2
+      if (
+        monkeyBottom >= top - 10 &&
+        monkeyBottom <= top + 10 &&
+        this.monkey.x >= p.x - p.w / 2 &&
+        this.monkey.x <= p.x + p.w / 2 &&
+        this.monkey.body.velocity.y >= -0.5
+      ) {
+        this._lastGroundedAt = this.time?.now ?? 0
+        this._extraJumpAvailable = false
+        this._isOnTreePlatform = true
+        return
+      }
+    }
+    this._isOnTreePlatform = false
+  }
+
+  _applyJumpBoost() {
+    if (!this._jumpBoostActive || this.isGrabbing) return
+    const now = this.time?.now ?? 0
+    if (now > this._jumpBoostUntil) {
+      this._jumpBoostActive = false
+      return
+    }
+    if (!this.monkey) {
+      this._jumpBoostActive = false
+      return
+    }
+    const dx = this.monkey.x - this._jumpStartX
+    const dy = this.monkey.y - this._jumpStartY
+    const traveled = dx * this._jumpDirX + dy * this._jumpDirY
+    if (traveled < this._jumpTargetAlong) {
+      this.monkey.applyForce({ x: this._jumpDirX * 0.02, y: this._jumpDirY * 0.02 })
+    } else {
+      this._jumpBoostActive = false
+    }
+  }
+
+  _capLianaDepth() {
+    if (!this.monkey) return
+    const { Body } = Phaser.Physics.Matter.Matter
+    const maxFromGround = this.groundY - this._monkeySize * 1.2
+    const maxBobY = maxFromGround
+    const maxAngle = Phaser.Math.DegToRad(60)
+
+    for (const t of this.trees) {
+      const pivotY = t.pivotBody.position.y
+      const maxLen = t.baseLen
+
+      // Clamp swing to between 8 and 4 o'clock relative to straight down (±60°).
+      const dx = t.bob.body.position.x - t.pivotBody.position.x
+      const dy = t.bob.body.position.y - t.pivotBody.position.y
+      const angle = Math.atan2(dx, dy) // angle from straight down
+      let clampedAngle = Phaser.Math.Clamp(angle, -maxAngle, maxAngle)
+
+      // Enforce max depth without changing length.
+      const maxDepthRatio = (maxBobY - t.pivotBody.position.y) / maxLen
+      if (maxDepthRatio < 1) {
+        const maxDepthAngle = Math.acos(Phaser.Math.Clamp(maxDepthRatio, -1, 1))
+        clampedAngle = Phaser.Math.Clamp(clampedAngle, -maxDepthAngle, maxDepthAngle)
+      }
+
+      const cx = t.pivotBody.position.x + Math.sin(clampedAngle) * maxLen
+      const cy = t.pivotBody.position.y + Math.cos(clampedAngle) * maxLen
+
+      if (t.liana.length !== maxLen) t.liana.length = maxLen
+      const maxDepthRatioClamped = Phaser.Math.Clamp(maxDepthRatio, -1, 1)
+      const maxDepthAngle = maxDepthRatioClamped < 1 ? Math.acos(maxDepthRatioClamped) : maxAngle
+      const allowedAngle = Math.min(maxAngle, maxDepthAngle)
+
+      if (Math.abs(angle) > allowedAngle) {
+        Body.setPosition(t.bob.body, { x: cx, y: cy })
+        const tx = Math.cos(clampedAngle)
+        const ty = -Math.sin(clampedAngle)
+        const v = t.bob.body.velocity
+        const tangentSpeed = v.x * tx + v.y * ty
+        Body.setVelocity(t.bob.body, { x: tx * tangentSpeed, y: ty * tangentSpeed })
+      }
+
+      if (t.bob.body.position.y > maxBobY) {
+        Body.setPosition(t.bob.body, { x: t.bob.body.position.x, y: maxBobY })
+        Body.setVelocity(t.bob.body, { x: t.bob.body.velocity.x, y: Math.min(0, t.bob.body.velocity.y) })
+      }
+    }
+  }
+
   _updateTreeMarkers(nearestTree) {
     for (const t of this.trees) {
-      t.pivotMarker.setFillStyle(0x38bdf8, 1)
-      t.pivotMarker.setScale(1)
-
       t.bob.setFillStyle(t.defaultBobColor, 1)
       t.bob.setScale(1)
     }
@@ -563,24 +1353,55 @@ class GameScene extends Phaser.Scene {
 
   _drawRopes() {
     this.ropeGfx.clear()
-    this.ropeGfx.lineStyle(3, 0x22c55e, 0.8)
+    this.ropeGfx.lineStyle(2, 0x38bdf8, 0.9)
 
+    const dashLen = 18
     for (const t of this.trees) {
-      this.ropeGfx.beginPath()
-      this.ropeGfx.moveTo(t.pivotMarker.x, t.pivotMarker.y)
-      this.ropeGfx.lineTo(t.bob.x, t.bob.y)
-      this.ropeGfx.strokePath()
+      const px = t.pivotBody.position.x
+      const py = t.pivotBody.position.y
+      const bx = t.bob.body.position.x
+      const by = t.bob.body.position.y
+      const dx = bx - px
+      const dy = by - py
+      const r = Math.hypot(dx, dy) || 1
+      const ux = dx / r
+      const uy = dy / r
+      this.ropeGfx.lineBetween(px, py, px + ux * dashLen, py + uy * dashLen)
     }
   }
 
   _driveLianas() {
-    // Keep the bobs gently swinging (so the yellow point traces a pendulum arc).
     const { Body } = Phaser.Physics.Matter.Matter
     const time = this.time.now * 0.001
+    const speed = 0.35
+    const amp = Math.PI / 3 // 60 degrees (120–240 around straight down)
 
     for (const t of this.trees) {
-      const drive = Math.sin(time + t.phaseOffset) * 0.00045
-      Body.applyForce(t.bob.body, t.bob.body.position, { x: drive, y: 0 })
+      const theta = Math.sin(time * speed + t.phaseOffset) * amp
+      const len = t.baseLen
+      const px = t.pivotBody.position.x
+      const py = t.pivotBody.position.y
+      const x = px + Math.sin(theta) * len
+      const y = py + Math.cos(theta) * len
+
+      Body.setPosition(t.bob.body, { x, y })
+      t.bob.setPosition(x, y)
+
+      const dtheta = Math.cos(time * speed + t.phaseOffset) * amp * speed
+      const vx = Math.cos(theta) * len * dtheta
+      const vy = -Math.sin(theta) * len * dtheta
+      Body.setVelocity(t.bob.body, { x: vx, y: vy })
+
+      if (t.lianaSprite) {
+        const dx = x - px
+        const dy = y - py
+        const r = Math.max(1, Math.hypot(dx, dy))
+        // Align sprite with the visible blue liana line (pivot -> bob).
+        const rot = Math.atan2(dy, dx) - Math.PI / 2
+        t.lianaSprite.setPosition(px, py)
+        t.lianaSprite.setSize(t.lianaWidth || t.lianaSprite.width, r)
+        t.lianaSprite.setRotation(rot)
+      }
     }
   }
 }
@@ -601,5 +1422,24 @@ const config = {
   }
 }
 
-new Phaser.Game(config)
+// Catch any errors so they show in console (Phaser can swallow some)
+window.addEventListener('error', (e) => {
+  console.error('Game error:', e.error || e.message, e.filename, e.lineno, e.colno)
+})
+window.addEventListener('unhandledrejection', (e) => {
+  console.error('Game promise rejection:', e.reason)
+})
 
+function startGame() {
+  try {
+    new Phaser.Game(config)
+  } catch (err) {
+    console.error('Phaser.Game() failed:', err)
+  }
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', startGame)
+} else {
+  startGame()
+}
