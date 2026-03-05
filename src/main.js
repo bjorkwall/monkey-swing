@@ -1499,8 +1499,8 @@ class GameScene extends Phaser.Scene {
   _createMobileControls() {
     const cam = this.cameras.main
     const pad = 18
-    const baseR = 44
-    const knobR = 18
+    const baseR = 88
+    const knobR = 36
     const cx = pad + baseR
     const cy = cam.height - pad - baseR
 
@@ -1521,12 +1521,12 @@ class GameScene extends Phaser.Scene {
     this._joystick.radius = baseR
 
     const jumpBtn = this.add
-      .text(cam.width - pad - 70, cam.height - pad - 90, 'JUMP', {
+      .text(cam.width - pad - 140, cam.height - pad - 180, 'JUMP', {
         fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif',
-        fontSize: '16px',
+        fontSize: '32px',
         color: '#111827',
         backgroundColor: '#fef3c7',
-        padding: { x: 10, y: 8 }
+        padding: { x: 20, y: 16 }
       })
       .setScrollFactor(0)
       .setDepth(3001)
@@ -1535,12 +1535,12 @@ class GameScene extends Phaser.Scene {
     jumpBtn.on('pointerdown', () => this._jumpOrRelease())
 
     const grabBtn = this.add
-      .text(cam.width - pad - 70, cam.height - pad - 28, 'GRAB', {
+      .text(cam.width - pad - 140, cam.height - pad - 56, 'GRAB', {
         fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif',
-        fontSize: '16px',
+        fontSize: '32px',
         color: '#111827',
         backgroundColor: '#fef3c7',
-        padding: { x: 10, y: 8 }
+        padding: { x: 20, y: 16 }
       })
       .setScrollFactor(0)
       .setDepth(3001)
@@ -1586,7 +1586,7 @@ class GameScene extends Phaser.Scene {
 
     j.knob.clear()
     j.knob.fillStyle(0xfef3c7, 0.9)
-    j.knob.fillCircle(kx, ky, 18)
+    j.knob.fillCircle(kx, ky, 36)
 
     const dead = 0.25
     const ax = dx / max
@@ -1789,7 +1789,7 @@ const config = {
   backgroundColor: '#0b1020',
   scene: [GameScene],
   scale: {
-    mode: Phaser.Scale.FIT,
+    mode: Phaser.Scale.RESIZE,
     autoCenter: Phaser.Scale.CENTER_BOTH
   },
   physics: {
