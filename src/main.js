@@ -4,9 +4,11 @@ class GameScene extends Phaser.Scene {
   constructor() {
     super('GameScene')
     this.worldW = 2400
-    this.worldH = 900
+    this.baseWorldH = 900
+    this.worldH = this.baseWorldH
     // Ground collision plane should sit 70px above the bottom of the world.
-    this.groundY = this.worldH - 70
+    this.baseGroundY = this.baseWorldH - 70
+    this.groundY = this.baseGroundY
 
     this.keys = null
     this.cursors = null
@@ -28,6 +30,8 @@ class GameScene extends Phaser.Scene {
     this.grabbedTree = null
     this.isGrabbing = false
     this.grabRatio = 1
+    this._lastGrabX = 0
+    this._lastGrabY = 0
 
     this.bananas = []
     this._bananaCleanup = []
@@ -35,6 +39,17 @@ class GameScene extends Phaser.Scene {
     this.bananaCounterBg = null
     this.bananaCounterIcon = null
     this.bananaCounterText = null
+    this._totalBananas = 0
+    this._collectedBananas = 0
+    this._celebrationActive = false
+    this._celebrationBg = null
+    this._celebrationText = null
+    this._celebrationLevel = null
+    this._celebrationDrops = []
+    this._lastCelebrationSpawnAt = 0
+    this._level = 1
+    this._levelAdvanceAt = 0
+    this._crocSpeedBase = 1.4
 
     this.bambooSprite = null
     this._isClimbingBamboo = false
@@ -58,8 +73,11 @@ class GameScene extends Phaser.Scene {
     this._gameOverBg = null
 
     this._bgm = null
+    this._bgmKey = null
+    this._bgmLoading = false
     this._isMuted = false
     this._muteButton = null
+    this._levelBadgeText = null
     this._isMobile = false
     this._mobile = { left: false, right: false, up: false, down: false }
     this._joystick = {
@@ -75,6 +93,8 @@ class GameScene extends Phaser.Scene {
     this._crocTimerText = null
     this._crocTimerIcon = null
     this._isOnTreePlatform = false
+    this._bgKey = null
+    this._bgLoading = false
 
     this._extraJumpAvailable = false
 
@@ -95,6 +115,10 @@ class GameScene extends Phaser.Scene {
   }
 
   preload() {
+    const qs = new URLSearchParams(window.location.search)
+    const levelParam = Number(qs.get('level'))
+    const initialLevel = Number.isFinite(levelParam) && levelParam >= 1 ? Math.floor(levelParam) : 1
+
     this.load.on('loaderror', (file) => {
       console.warn('Asset failed to load (will use fallbacks):', file.key, file.url)
     })
@@ -118,7 +142,7 @@ class GameScene extends Phaser.Scene {
     this.load.image('crocodile-left-2', 'assets/crocodile/crocodile-left-2.png')
     this.load.image('crocodile-right-1', 'assets/crocodile/crocodile-right-1.png')
     this.load.image('crocodile-right-2', 'assets/crocodile/crocodile-right-2.png')
-    this.load.audio('bgm', 'assets/music/monkey_swing.mp3')
+    this.load.audio('bgm-1', 'assets/music/monkey_swing_1.mp3')
     this.load.image('banana', 'assets/bananas/banana.png')
     this.load.image('rotten-banana', 'assets/bananas/rotten-banana.png')
     this.load.image('bamboo', 'assets/plants/bamboo.png')
@@ -126,12 +150,32 @@ class GameScene extends Phaser.Scene {
     this.load.image('tree-crown', 'assets/plants/tree-crown.png')
 
     // Backgrounds: public/assets/backgrounds/
-    this.load.image('jungle-bg', 'assets/backgrounds/jungle-background.png')
+    this.load.image('jungle-bg-1', 'assets/backgrounds/jungle-background-level-1.png')
+    if (initialLevel !== 1) {
+      this.load.image(`jungle-bg-${initialLevel}`, `assets/backgrounds/jungle-background-level-${initialLevel}.png`)
+    }
   }
 
   create() {
     // Debug: if you see this text, the scene is running (remove once fixed)
     this.add.text(16, 16, 'Scene started', { fontSize: '14px', color: '#88ff88' }).setScrollFactor(0).setDepth(9999)
+
+    const qs = new URLSearchParams(window.location.search)
+    const levelParam = Number(qs.get('level'))
+    if (Number.isFinite(levelParam) && levelParam >= 1) {
+      this._level = Math.floor(levelParam)
+    } else {
+      this._level = 1
+    }
+
+    // Increase world height for higher levels so upper layer becomes visible.
+    if (this._level >= 2) {
+      this.worldH = Math.floor(this.baseWorldH * 1.8)
+      this.groundY = this.worldH - 70
+    } else {
+      this.worldH = this.baseWorldH
+      this.groundY = this.baseGroundY
+    }
 
     // Hard reset on restart
     if (this.crocodiles?.length) {
@@ -163,6 +207,7 @@ class GameScene extends Phaser.Scene {
       this._createCrocodile()
       this._createHUD()
       this._createAudio()
+      this._resetCelebration()
       this._wireCollisions()
     } catch (err) {
       console.error('[GameScene] create() failed:', err)
@@ -211,6 +256,8 @@ class GameScene extends Phaser.Scene {
     this.bananaScore = 0
     if (this.bananaCounterText) this.bananaCounterText.setText('0')
     if (this._crocTimerText) this._crocTimerText.setText('30')
+    if (this._levelBadgeText) this._levelBadgeText.setText(`L${this._level}`)
+    this._playBgmForLevel(this._level)
   }
 
   update() {
@@ -253,19 +300,27 @@ class GameScene extends Phaser.Scene {
     this._applyJumpBoost()
     this._checkBananaOverlap()
     this._flushBananaCleanup()
+    this._updateCelebration()
     this._checkCrocodileHit()
   }
 
   _drawBackground() {
-    if (this.textures.exists('jungle-bg')) {
-      const bg = this.add.image(this.worldW / 2, this.worldH / 2, 'jungle-bg').setDepth(-100)
+    const key = `jungle-bg-${this._level}`
+    this._bgKey = key
+    if (this.textures.exists(key)) {
+      const bg = this.add.image(this.worldW / 2, this.worldH / 2, key).setDepth(-100)
 
       // "cover" the whole world area without stretching aspect ratio
       const sx = this.worldW / bg.width
       const sy = this.worldH / bg.height
       const s = Math.max(sx, sy)
       bg.setScale(s)
-    } else {
+      return
+    }
+
+    this._loadBackgroundForLevel(this._level)
+
+    {
       const g = this.add.graphics()
       g.fillStyle(0x0b1020, 1)
       g.fillRect(0, 0, this.worldW, this.worldH)
@@ -278,6 +333,19 @@ class GameScene extends Phaser.Scene {
         hills.fillCircle(x + 120, this.worldH - 130, 220)
       }
     }
+  }
+
+  _loadBackgroundForLevel(level) {
+    if (this._bgLoading) return
+    const key = `jungle-bg-${level}`
+    if (this.textures.exists(key)) return
+    this._bgLoading = true
+    this.load.image(key, `assets/backgrounds/jungle-background-level-${level}.png`)
+    this.load.once('complete', () => {
+      this._bgLoading = false
+      this.scene.restart()
+    })
+    this.load.start()
   }
 
   _createGround() {
@@ -419,7 +487,7 @@ class GameScene extends Phaser.Scene {
     const platformColor = 0x7c4a2d
     const leafColor = 0x1f8a4c
 
-    const platformDefs = [
+    const basePlatformDefs = [
       { x: 320, y: 260, w: 340, h: 30 },
       { x: 900, y: 220, w: 300, h: 30 },
       { x: 1480, y: 280, w: 340, h: 30 },
@@ -427,8 +495,23 @@ class GameScene extends Phaser.Scene {
     ]
 
     let lowestPlatformY = -Infinity
-    for (let i = 0; i < platformDefs.length; i++) {
-      const p = platformDefs[i]
+    const yOffset = this.groundY - this.baseGroundY
+    const platformDefs = basePlatformDefs.map((p) => ({ ...p, y: p.y + yOffset }))
+    const layerDefs = [...platformDefs]
+    if (this._level >= 2) {
+      for (const p of platformDefs) {
+        const delta = this.groundY - p.y
+        layerDefs.push({
+          x: p.x,
+          y: p.y - delta,
+          w: Math.max(220, Math.floor(p.w * 0.7)),
+          h: 26
+        })
+      }
+    }
+
+    for (let i = 0; i < layerDefs.length; i++) {
+      const p = layerDefs[i]
       lowestPlatformY = Math.max(lowestPlatformY, p.y)
 
       this.matter.add.rectangle(p.x, p.y, p.w, p.h, {
@@ -559,6 +642,9 @@ class GameScene extends Phaser.Scene {
   _createBananas() {
     if (!this.textures.exists('banana')) return
 
+    this._totalBananas = 0
+    this._collectedBananas = 0
+
     const bananaSize = 48
     const bananaRadius = bananaSize * 0.45
     const minBananaDist = 30
@@ -596,6 +682,7 @@ class GameScene extends Phaser.Scene {
       banana.setData('type', type)
       banana.setData('radius', bananaRadius)
       this.bananas.push(banana)
+      if (type === 'banana') this._totalBananas += 1
     }
 
     // One banana per platform
@@ -702,17 +789,31 @@ class GameScene extends Phaser.Scene {
     muteBg.lineStyle(3, 0xdc2626, 1)
     muteBg.strokeRoundedRect(muteX, muteY, muteW, muteH, 10)
 
+    // Level badge to the left of mute
+    const badgeX = muteX - 54
+    const badgeY = muteY + 6
+    const badgeW = 48
+    const badgeH = 32
+    this._levelBadge = this.add.graphics().setScrollFactor(0).setDepth(1001)
+    this._levelBadge.fillStyle(0x000000, 1)
+    this._levelBadge.fillRoundedRect(badgeX, badgeY, badgeW, badgeH, 6)
+    this._levelBadgeText = this.add
+      .text(badgeX + badgeW / 2, badgeY + 6, `L${this._level}`, {
+        fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif',
+        fontSize: '16px',
+        color: '#ef4444'
+      })
+      .setScrollFactor(0)
+      .setDepth(1002)
+      .setOrigin(0.5, 0)
+
     this._muteButton.on('pointerdown', () => {
       this._toggleMute()
     })
   }
 
   _createAudio() {
-    if (!this.sound || !this.cache.audio.exists('bgm')) return
-    if (!this._bgm) {
-      this._bgm = this.sound.add('bgm', { loop: true, volume: 0.35 })
-      if (!this._isMuted) this._bgm.play()
-    }
+    this._playBgmForLevel(this._level)
   }
 
   _toggleMute() {
@@ -722,6 +823,38 @@ class GameScene extends Phaser.Scene {
       else this._bgm.resume()
     }
     if (this._muteButton) this._muteButton.setText(this._isMuted ? '🔇' : '🔊')
+  }
+
+  _playBgmForLevel(level) {
+    if (!this.sound) return
+    const key = `bgm-${level}`
+    if (this._bgmKey === key && this._bgm) {
+      if (!this._isMuted && !this._bgm.isPlaying) this._bgm.play()
+      return
+    }
+
+    if (this._bgm) {
+      this._bgm.stop()
+      this._bgm.destroy()
+      this._bgm = null
+      this._bgmKey = null
+    }
+
+    if (this.cache.audio.exists(key)) {
+      this._bgm = this.sound.add(key, { loop: true, volume: 0.35 })
+      this._bgmKey = key
+      if (!this._isMuted) this._bgm.play()
+      return
+    }
+
+    if (this._bgmLoading) return
+    this._bgmLoading = true
+    this.load.audio(key, `assets/music/monkey_swing_${level}.mp3`)
+    this.load.once('complete', () => {
+      this._bgmLoading = false
+      this._playBgmForLevel(level)
+    })
+    this.load.start()
   }
 
   _updateHUD(nearest) {
@@ -890,7 +1023,7 @@ class GameScene extends Phaser.Scene {
       this._crocFrame = this._crocFrame === 1 ? 2 : 1
     }
 
-    const speed = 1.4
+    const speed = this._crocSpeedBase * (1 + Math.min(this._level - 1, 4) * 0.05)
     const minX = 80
     const maxX = this.worldW - 80
     for (const croc of this.crocodiles) {
@@ -1033,6 +1166,10 @@ class GameScene extends Phaser.Scene {
     this._bananaCleanup.push(banana)
     this.bananaScore += 1
     if (this.bananaCounterText) this.bananaCounterText.setText(String(this.bananaScore))
+    this._collectedBananas += 1
+    if (this._totalBananas > 0 && this._collectedBananas >= this._totalBananas) {
+      this._startCelebration()
+    }
   }
 
   _collectRottenBanana(banana) {
@@ -1121,6 +1258,130 @@ class GameScene extends Phaser.Scene {
     }
     this._bananaCleanup = []
     this.bananas = this.bananas.filter((b) => b && !b.getData('collected'))
+  }
+
+  _resetCelebration() {
+    this._celebrationActive = false
+    this._lastCelebrationSpawnAt = 0
+    if (this._celebrationBg) this._celebrationBg.setVisible(false)
+    if (this._celebrationText) this._celebrationText.setVisible(false)
+    if (this._celebrationLevel) this._celebrationLevel.setVisible(false)
+    for (const d of this._celebrationDrops) d.destroy()
+    this._celebrationDrops = []
+  }
+
+  _startCelebration() {
+    if (this._celebrationActive) return
+    this._celebrationActive = true
+    this._levelAdvanceAt = (this.time?.now ?? 0) + 3000
+    const cx = this.cameras.main.width / 2
+    const cy = this.cameras.main.height / 2 - 120
+    if (!this._celebrationBg) {
+      this._celebrationBg = this.add.graphics().setScrollFactor(0).setDepth(2500)
+      this._celebrationBg.fillStyle(0xfef3c7, 0.85)
+      this._celebrationBg.fillRoundedRect(cx - 140, cy - 40, 280, 80, 12)
+      this._celebrationBg.lineStyle(3, 0x3f2a1d, 1)
+      this._celebrationBg.strokeRoundedRect(cx - 140, cy - 40, 280, 80, 12)
+    } else {
+      this._celebrationBg.setVisible(true)
+    }
+
+    if (!this._celebrationText) {
+      this._celebrationText = this.add
+        .text(cx, cy, 'Grattis!', {
+          fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif',
+          fontSize: '42px',
+          color: '#111827',
+          align: 'center'
+        })
+        .setScrollFactor(0)
+        .setOrigin(0.5, 0.5)
+        .setDepth(2501)
+    } else {
+      this._celebrationText.setVisible(true)
+    }
+
+    if (!this._celebrationLevel) {
+      this._celebrationLevel = this.add
+        .text(cx, cy + 46, `Level ${this._level}`, {
+          fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif',
+          fontSize: '26px',
+          color: '#ef4444',
+          align: 'center'
+        })
+        .setScrollFactor(0)
+        .setOrigin(0.5, 0.5)
+        .setDepth(2501)
+    } else {
+      this._celebrationLevel.setText(`Level ${this._level}`)
+      this._celebrationLevel.setVisible(true)
+    }
+  }
+
+  _updateCelebration() {
+    if (!this._celebrationActive) return
+    const now = this.time?.now ?? 0
+    if (!this._lastCelebrationSpawnAt) this._lastCelebrationSpawnAt = now
+    if (now - this._lastCelebrationSpawnAt >= 120) {
+      this._lastCelebrationSpawnAt = now
+      const x = Phaser.Math.Between(40, this.cameras.main.width - 40)
+      const y = -20
+      const isBanana = Math.random() < 0.6
+      if (isBanana && this.textures.exists('banana')) {
+        const b = this.add.image(x, y, 'banana').setScrollFactor(0).setDepth(2400)
+        b.setDisplaySize(24, 24)
+        b.setData('vy', Phaser.Math.Between(2, 5))
+        this._celebrationDrops.push(b)
+      } else {
+        const colors = [0xf97316, 0x22c55e, 0x3b82f6, 0xe11d48, 0xfacc15]
+        const r = this.add.rectangle(x, y, 6, 10, Phaser.Utils.Array.GetRandom(colors))
+        r.setScrollFactor(0).setDepth(2400)
+        r.setData('vy', Phaser.Math.Between(3, 6))
+        this._celebrationDrops.push(r)
+      }
+    }
+
+    for (const d of this._celebrationDrops) {
+      const vy = d.getData('vy') ?? 3
+      d.y += vy
+    }
+    this._celebrationDrops = this._celebrationDrops.filter((d) => {
+      if (d.y > this.cameras.main.height + 40) {
+        d.destroy()
+        return false
+      }
+      return true
+    })
+
+    if (this._levelAdvanceAt > 0 && now >= this._levelAdvanceAt) {
+      this._levelAdvanceAt = 0
+      this._advanceLevel()
+    }
+  }
+
+  _advanceLevel() {
+    this._level += 1
+    this._resetCelebration()
+    if (this._levelBadgeText) this._levelBadgeText.setText(`L${this._level}`)
+    this._playBgmForLevel(this._level)
+
+    // Reset crocodiles for new level
+    for (const c of this.crocodiles) c.destroy()
+    this.crocodiles = []
+    this._crocNextId = 0
+    this._crocActive = false
+    this._crocSpawnAt = (this.time?.now ?? 0) + 30000
+    if (this._crocTimerText) this._crocTimerText.setText('30')
+    this._createCrocodile()
+
+    // Remove existing bananas and respawn fresh placements
+    for (const b of this.bananas) {
+      if (b && b.body) this.matter.world.remove(b.body)
+      if (b && b.destroy) b.destroy()
+    }
+    this.bananas = []
+    this._bananaCleanup = []
+    this._createBananas()
   }
 
   _isGrounded() {
@@ -1260,6 +1521,8 @@ class GameScene extends Phaser.Scene {
     const gy = best.pivotBody.position.y + (best.bob.body.position.y - best.pivotBody.position.y) * bestRatio
     this.monkey.setPosition(gx, gy)
     this.monkey.setVelocity(best.bob.body.velocity.x, best.bob.body.velocity.y)
+    this._lastGrabX = gx
+    this._lastGrabY = gy
 
     // Visually attach the monkey to the liana end without affecting its physics.
     this.monkey.setStatic(true)
@@ -1305,6 +1568,8 @@ class GameScene extends Phaser.Scene {
     const gy = py + (by - py) * this.grabRatio
     this.monkey.setPosition(gx, gy)
     this.monkey.setVelocity(this.grabbedTree.bob.body.velocity.x, this.grabbedTree.bob.body.velocity.y)
+    this._lastGrabX = gx
+    this._lastGrabY = gy
   }
 
   _handleLianaClimb() {
@@ -1320,19 +1585,16 @@ class GameScene extends Phaser.Scene {
     if (dir === 0) return
 
     if (down && this.grabRatio >= 0.98) {
-      const t = this.grabbedTree
-      if (t?.bob?.body?.position && t?.pivotBody?.position) {
-        this.grabRatio = 1
-        const px = t.pivotBody.position.x
-        const py = t.pivotBody.position.y
-        const bx = t.bob.body.position.x
-        const by = t.bob.body.position.y
-        if (Number.isFinite(px) && Number.isFinite(py) && Number.isFinite(bx) && Number.isFinite(by)) {
-          this.monkey.setPosition(bx, by)
-          this.monkey.setVelocity(t.bob.body.velocity.x, t.bob.body.velocity.y)
-        }
-      }
+      // Release from the current position on the liana (no teleport).
+      const fx = this.monkey.x
+      const fy = this.monkey.y
       this._releaseGrab()
+      if (Number.isFinite(fx) && Number.isFinite(fy)) {
+        const cx = Phaser.Math.Clamp(fx, 0, this.worldW)
+        const cy = Phaser.Math.Clamp(fy, 0, this.worldH)
+        this.monkey.setPosition(cx, cy)
+      }
+      this.monkey.setVelocity(0, 0)
       this.monkey.setIgnoreGravity(false)
       this.monkey.setStatic(false)
       return
