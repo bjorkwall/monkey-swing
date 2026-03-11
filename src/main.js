@@ -1,6 +1,10 @@
 import Phaser from 'phaser'
 
 class GameScene extends Phaser.Scene {
+  init(data) {
+    this._restartData = data || {}
+  }
+
   constructor() {
     super('GameScene')
     this.worldW = 2400
@@ -61,6 +65,7 @@ class GameScene extends Phaser.Scene {
     this._isSick = false
     this._sickImmobilizeUntil = 0
     this._sickAnimStart = 0
+    this._sickSfxPlayed = false
     this.crocodiles = []
     this._crocNextId = 0
     this._lastCrocFrameAt = 0
@@ -71,6 +76,9 @@ class GameScene extends Phaser.Scene {
     this._gameOverTitle = null
     this._gameOverNumber = null
     this._gameOverBg = null
+    this._gameOverShowAt = 0
+    this._gameOverShown = false
+    this._restartData = null
 
     this._bgm = null
     this._bgmKey = null
@@ -95,8 +103,26 @@ class GameScene extends Phaser.Scene {
     this._isOnTreePlatform = false
     this._bgKey = null
     this._bgLoading = false
+    this.bird = null
+    this._birdAlive = false
+    this._birdBaseY = 0
+    this._birdPhase = 0
+    this._birdDir = -1
+    this._birdStunnedUntil = 0
+    this._birdBlinkAt = 0
+    this._birdDying = false
+    this._birdDeathAt = 0
+    this._birdMonkeyDropAt = 0
+    this._birdDebugLine = null
 
     this._extraJumpAvailable = false
+    this._introActive = false
+    this._introImage = null
+    this._introBorder = null
+    this._introMask = null
+    this._introIgnoreUntil = 0
+    this._wasGrounded = false
+    this._airborneStartY = null
 
     this._jumpBoostActive = false
     this._jumpBoostUntil = 0
@@ -117,6 +143,7 @@ class GameScene extends Phaser.Scene {
   preload() {
     const qs = new URLSearchParams(window.location.search)
     const levelParam = Number(qs.get('level'))
+    const placementParam = qs.get('placement')
     const initialLevel = Number.isFinite(levelParam) && levelParam >= 1 ? Math.floor(levelParam) : 1
 
     this.load.on('loaderror', (file) => {
@@ -148,6 +175,17 @@ class GameScene extends Phaser.Scene {
     this.load.image('bamboo', 'assets/plants/bamboo.png')
     this.load.image('liana', 'assets/plants/liana.png')
     this.load.image('tree-crown', 'assets/plants/tree-crown.png')
+    this.load.image('bird', 'assets/bird/kakadua.png')
+    this.load.image('instructions', 'assets/game/instructions.png')
+    this.load.audio('sfx-jump', 'assets/sfx/jump.wav')
+    this.load.audio('sfx-growl', 'assets/sfx/growl.wav')
+    this.load.audio('sfx-land', 'assets/sfx/land.wav')
+    this.load.audio('sfx-bird', 'assets/sfx/bird.wav')
+    this.load.audio('sfx-sick', 'assets/sfx/sick.wav')
+    this.load.audio('sfx-die', 'assets/sfx/die.wav')
+    this.load.audio('sfx-banana', 'assets/sfx/banana.wav')
+    this.load.audio('sfx-swoosh', 'assets/sfx/swoosh.wav')
+    this.load.audio('sfx-level-clear', 'assets/sfx/level-clear.wav')
 
     // Backgrounds: public/assets/backgrounds/
     this.load.image('jungle-bg-1', 'assets/backgrounds/jungle-background-level-1.png')
@@ -162,7 +200,9 @@ class GameScene extends Phaser.Scene {
 
     const qs = new URLSearchParams(window.location.search)
     const levelParam = Number(qs.get('level'))
-    if (Number.isFinite(levelParam) && levelParam >= 1) {
+    if (this._restartData?.forceLevel1) {
+      this._level = 1
+    } else if (Number.isFinite(levelParam) && levelParam >= 1) {
       this._level = Math.floor(levelParam)
     } else {
       this._level = 1
@@ -187,6 +227,8 @@ class GameScene extends Phaser.Scene {
     this._crocSpawnAt = 0
     this._isGameOver = false
     this._gameOverUntil = 0
+    this._gameOverShowAt = 0
+    this._gameOverShown = false
     if (this._gameOverBg) this._gameOverBg.setVisible(false)
     if (this._gameOverTitle) this._gameOverTitle.setVisible(false)
     if (this._gameOverNumber) this._gameOverNumber.setVisible(false)
@@ -197,16 +239,22 @@ class GameScene extends Phaser.Scene {
       }
       this.matter.world.setBounds(0, 0, this.worldW, this.worldH, 64, true, true, true, true)
 
-      this._ensureMonkeyTextures()
+    this._ensureMonkeyTextures()
+
+      this.bananas = []
+      this._bananaCleanup = []
+      this._totalBananas = 0
+      this._collectedBananas = 0
 
       this._drawBackground()
-      this._createGround()
-      this._createTrees()
-      this._createBananas()
+    this._createGround()
+    this._createTrees()
+    this._createBananas()
       this._createMonkey()
       this._createCrocodile()
+      this._createBird()
       this._createHUD()
-      this._createAudio()
+    this._createAudio()
       this._resetCelebration()
       this._wireCollisions()
     } catch (err) {
@@ -242,7 +290,30 @@ class GameScene extends Phaser.Scene {
 
     this.input.keyboard.on('keydown-D', () => this._tryGrab())
     this.input.keyboard.on('keydown-SPACE', () => this._jumpOrRelease())
-    this.input.keyboard.on('keydown-R', () => this.scene.restart())
+    this.input.keyboard.on('keydown-R', () => {
+      if (this._introActive) {
+        this._dismissIntro()
+        return
+      }
+      this.scene.restart()
+    })
+
+    this.input.keyboard.on('keydown', () => {
+      const now = this.time?.now ?? 0
+      if (this._isGameOver && now >= this._gameOverUntil) {
+        this.scene.restart({ forceLevel1: true })
+        return
+      }
+      if (this._introActive) this._dismissIntro()
+    })
+    this.input.on('pointerdown', () => {
+      const now = this.time?.now ?? 0
+      if (this._isGameOver && now >= this._gameOverUntil) {
+        this.scene.restart({ forceLevel1: true })
+        return
+      }
+      if (this._introActive) this._dismissIntro()
+    })
 
     this.game.events.on('focus', () => {
       if (this.input?.keyboard) this.input.keyboard.enabled = true
@@ -251,18 +322,44 @@ class GameScene extends Phaser.Scene {
     this._isMobile = window.matchMedia?.('(pointer: coarse)').matches || /Mobi|Android|iPad|iPhone/i.test(navigator.userAgent)
     if (this._isMobile) this._createMobileControls()
 
-    this._crocSpawnAt = (this.time?.now ?? 0) + 30000
+    this._crocSpawnAt = 0
     this._crocActive = false
     this.bananaScore = 0
     if (this.bananaCounterText) this.bananaCounterText.setText('0')
     if (this._crocTimerText) this._crocTimerText.setText('30')
     if (this._levelBadgeText) this._levelBadgeText.setText(`L${this._level}`)
-    this._playBgmForLevel(this._level)
+
+    const placementParam = new URLSearchParams(window.location.search).get('placement')
+    if (placementParam === 'top' && this.platforms.length > 0 && this.monkey) {
+      // Find leftmost top-layer platform (lowest y)
+      let target = this.platforms[0]
+      for (const p of this.platforms) {
+        if (p.y < target.y || (p.y === target.y && p.x < target.x)) target = p
+      }
+      const size = this._monkeySize
+      this.monkey.setPosition(target.x - target.w / 2 + size / 2, target.y - target.h / 2 - size / 2)
+      this.monkey.setVelocity(0, 0)
+    }
+
+    if (this._bgm) {
+      this._bgm.stop()
+      this._bgm.destroy()
+      this._bgm = null
+      this._bgmKey = null
+    }
+
+    this._showIntroOverlay()
   }
 
   update() {
     if (!this.monkey) return
 
+    if (this._introActive) {
+      this.monkey.setVelocity(0, 0)
+      return
+    }
+
+    const wasGrounded = this._wasGrounded
     if (!this.cursors && this.input?.keyboard) this.cursors = this.input.keyboard.createCursorKeys()
     if (!this.keys && this.input?.keyboard) {
       this.keys = this.input.keyboard.addKeys({
@@ -273,12 +370,25 @@ class GameScene extends Phaser.Scene {
     }
 
     this._updateGameOver()
+    if (this._isGameOver) return
     if (this.monkey.y > this.worldH + 200) {
-      this.scene.restart()
+      this.scene.restart({ forceLevel1: true })
       return
     }
 
     this._refreshGrounded()
+    const nowGrounded = this._isGrounded()
+    if (!nowGrounded && (wasGrounded || this._airborneStartY === null)) {
+      this._airborneStartY = this.monkey.y
+    }
+    if (nowGrounded && !wasGrounded) {
+      if (this._airborneStartY !== null) {
+        const fallDist = this.monkey.y - this._airborneStartY
+        if (fallDist >= 500) this._playSfx('sfx-land', 0.7)
+      }
+      this._airborneStartY = null
+    }
+    this._wasGrounded = nowGrounded
     this._updateSickState()
     this._handleBambooClimb()
     this._safetyResetStates()
@@ -286,6 +396,7 @@ class GameScene extends Phaser.Scene {
     this._updateMonkeyVisual()
 
     this._updateCrocodile()
+    this._updateBird()
     this._driveLianas()
     const nearest = this._nearestBobWithin(70)
     this._updateTreeMarkers(nearest)
@@ -302,6 +413,58 @@ class GameScene extends Phaser.Scene {
     this._flushBananaCleanup()
     this._updateCelebration()
     this._checkCrocodileHit()
+    this._checkBirdHit()
+  }
+
+  _showIntroOverlay() {
+    if (!this.textures.exists('instructions')) return
+    const cam = this.cameras.main
+    const cx = cam.width / 2
+    const cy = cam.height / 2
+    const img = this.add.image(cx, cy, 'instructions')
+      .setScrollFactor(0)
+      .setDepth(10000)
+      .setAlpha(0.9)
+    const maxW = cam.width * 0.8
+    const maxH = cam.height * 0.8
+    const scale = Math.min(maxW / img.width, maxH / img.height, 1)
+    img.setScale(scale)
+    img.setInteractive({ useHandCursor: true })
+    img.on('pointerdown', () => {
+      if (this._introActive) this._dismissIntro()
+    })
+
+    const w = img.displayWidth
+    const h = img.displayHeight
+    const radius = 18
+
+    const maskGfx = this.add.graphics().setScrollFactor(0).setDepth(10001)
+    maskGfx.fillStyle(0xffffff, 1)
+    maskGfx.fillRoundedRect(cx - w / 2, cy - h / 2, w, h, radius)
+    img.setMask(maskGfx.createGeometryMask())
+    maskGfx.setVisible(false)
+
+    this._introImage = img
+    this._introMask = maskGfx
+    this._introActive = true
+    if (this.input?.keyboard) this.input.keyboard.enabled = true
+  }
+
+  _dismissIntro() {
+    if (!this._introActive) return
+    this._introActive = false
+    this._introIgnoreUntil = (this.time?.now ?? 0) + 80
+
+    if (this._introImage) this._introImage.destroy()
+    if (this._introMask) this._introMask.destroy()
+    this._introImage = null
+    this._introMask = null
+
+    const now = this.time?.now ?? 0
+    this._crocSpawnAt = now + 30000
+    this._crocActive = false
+    if (this._crocTimerText) this._crocTimerText.setText('30')
+    this._playBgmForLevel(this._level)
   }
 
   _drawBackground() {
@@ -483,6 +646,8 @@ class GameScene extends Phaser.Scene {
     // Layering: rope should render behind trees/platforms.
     this.ropeGfx = this.add.graphics().setDepth(1)
     this.treesGfx = this.add.graphics().setDepth(5)
+    this.trees = []
+    this.platforms = []
 
     const platformColor = 0x7c4a2d
     const leafColor = 0x1f8a4c
@@ -494,7 +659,6 @@ class GameScene extends Phaser.Scene {
       { x: 2060, y: 260, w: 340, h: 30 }
     ]
 
-    let lowestPlatformY = -Infinity
     const yOffset = this.groundY - this.baseGroundY
     const platformDefs = basePlatformDefs.map((p) => ({ ...p, y: p.y + yOffset }))
     const layerDefs = [...platformDefs]
@@ -512,8 +676,6 @@ class GameScene extends Phaser.Scene {
 
     for (let i = 0; i < layerDefs.length; i++) {
       const p = layerDefs[i]
-      lowestPlatformY = Math.max(lowestPlatformY, p.y)
-
       this.matter.add.rectangle(p.x, p.y, p.w, p.h, {
         isStatic: true,
         friction: 0.25,
@@ -530,9 +692,9 @@ class GameScene extends Phaser.Scene {
         crown.setScale(scale)
       }
 
-      // Blue pivot point: at bottom of the brown platform
+      // Blue pivot point: slightly above the bottom of the brown platform
       const pivotX = p.x
-      const pivotY = p.y + p.h / 2
+      const pivotY = p.y + p.h / 2 - 20
       const pivotBody = this.matter.add.circle(pivotX, pivotY, 6, { isStatic: true, isSensor: true })
 
       // Yellow bob point: end of liana under the platform
@@ -579,7 +741,6 @@ class GameScene extends Phaser.Scene {
       })
 
     }
-
     // Bamboo between two random platforms
     if (this.platforms.length >= 2 && this.textures.exists('bamboo')) {
       const i = Phaser.Math.Between(0, this.platforms.length - 2)
@@ -589,7 +750,7 @@ class GameScene extends Phaser.Scene {
       const rightEdge = b.x - b.w / 2 - 20
       const bx = rightEdge > leftEdge ? Phaser.Math.Between(leftEdge, rightEdge) : (a.x + b.x) / 2
 
-      const lowestY = lowestPlatformY > 0 ? lowestPlatformY : a.y
+      const lowestY = a.y
       const targetH = Math.max(120, (this.groundY - lowestY) * 0.9)
       const img = this.textures.get('bamboo')?.getSourceImage()
       const bambooW = img?.width ?? 32
@@ -639,6 +800,29 @@ class GameScene extends Phaser.Scene {
     this.crocodiles.push(croc)
   }
 
+  _createBird() {
+    if (this._level < 2) return
+    if (!this.textures.exists('bird')) return
+    const y = this.worldH * 0.35
+    this.bird = this.add.image(this.worldW + 100, y, 'bird').setDepth(16)
+    this.bird.setDisplaySize(70, 50)
+    this._birdAlive = true
+    this._birdBaseY = y
+    this._birdPhase = 0
+    this._birdDir = -1
+    this._birdStunnedUntil = 0
+    this._birdBlinkAt = 0
+    this._birdDying = false
+    this._birdDeathAt = 0
+    this._birdMonkeyDropAt = 0
+    this.bird.setAlpha(1)
+    this._playSfx('sfx-bird', 0.7)
+
+    if (!this._birdDebugLine) {
+      this._birdDebugLine = this.add.graphics().setDepth(17)
+    }
+  }
+
   _createBananas() {
     if (!this.textures.exists('banana')) return
 
@@ -662,6 +846,7 @@ class GameScene extends Phaser.Scene {
 
     const isTooCloseToOtherBananas = (x, y) => {
       for (const b of this.bananas) {
+        if (!b || typeof b.x !== 'number' || typeof b.y !== 'number') continue
         const dx = b.x - x
         const dy = b.y - y
         if (Math.hypot(dx, dy) < bananaSize + minBananaDist) return true
@@ -816,6 +1001,13 @@ class GameScene extends Phaser.Scene {
     this._playBgmForLevel(this._level)
   }
 
+  _playSfx(key, volume = 1) {
+    if (!this.sound || this._isMuted) return
+    if (this.cache.audio.exists(key)) {
+      this.sound.play(key, { volume })
+    }
+  }
+
   _toggleMute() {
     this._isMuted = !this._isMuted
     if (this._bgm) {
@@ -858,6 +1050,7 @@ class GameScene extends Phaser.Scene {
   }
 
   _updateHUD(nearest) {
+    if (!this.hud) return
     const state = this.isGrabbing ? 'på lian' : this._canJump() ? 'på mark' : 'i luften'
     const nearTxt = nearest ? `nära lian: ja` : 'nära lian: nej'
     this.hud.setText(
@@ -1006,12 +1199,14 @@ class GameScene extends Phaser.Scene {
         croc.x = -60
         croc.setData('dir', 1)
         croc.setVisible(true)
+        this._playSfx('sfx-growl', 0.7)
       } else {
         this._createCrocodile()
         const created = this.crocodiles[this.crocodiles.length - 1]
         created.x = -60
         created.setData('dir', 1)
         created.setVisible(true)
+        this._playSfx('sfx-growl', 0.7)
       }
       this._crocSpawnAt = now + 20000
     }
@@ -1048,15 +1243,113 @@ class GameScene extends Phaser.Scene {
     }
   }
 
+  _updateBird() {
+    if (!this._birdAlive || !this.bird) return
+    const now = this.time?.now ?? 0
+    const speed = 2.2
+
+    if (this._birdDebugLine) {
+      this._birdDebugLine.clear()
+    }
+
+    if (this._birdDying) {
+      this._birdPhase += 0.08
+      this.bird.x += Math.sin(this._birdPhase) * 0.8
+      this.bird.y += 4
+      if (this.bird.y >= this.groundY - 10) {
+        this.bird.destroy()
+        this.bird = null
+        this._birdAlive = false
+        if (this._birdDebugLine) this._birdDebugLine.clear()
+      }
+      return
+    }
+
+    if (this._birdStunnedUntil > now) {
+      if (!this._birdBlinkAt) this._birdBlinkAt = now
+      if (now - this._birdBlinkAt >= 200) {
+        this._birdBlinkAt = now
+        this.bird.setAlpha(this.bird.alpha === 1 ? 0.5 : 1)
+      }
+      return
+    }
+
+    if (this._birdStunnedUntil > 0 && now >= this._birdStunnedUntil) {
+      this._birdStunnedUntil = 0
+      this._birdDying = true
+      this._birdDeathAt = now + 0
+      this.bird.setAlpha(1)
+      return
+    }
+
+    this.bird.x += speed * this._birdDir
+    this._birdPhase += 0.06
+    this.bird.y = this._birdBaseY + Math.sin(this._birdPhase) * 30
+
+    if (this.bird.x < -80) {
+      this.bird.x = -80
+      this._birdDir = 1
+    } else if (this.bird.x > this.worldW + 80) {
+      this.bird.x = this.worldW + 80
+      this._birdDir = -1
+    }
+  }
+
+  _checkBirdHit() {
+    if (!this._birdAlive || !this.bird || this._isGameOver) return
+    const now = this.time?.now ?? 0
+    const dx = Math.abs(this.monkey.x - this.bird.x)
+    const dy = Math.abs(this.monkey.y - this.bird.y)
+    const monkeyBottom = this.monkey.y + this._monkeySize / 2
+    const top = this.bird.y - 12
+    const monkeyCenterAbove = this.monkey.y <= this.bird.y
+    const onTop =
+      dx < 60 && monkeyCenterAbove && monkeyBottom >= top - 6 && monkeyBottom <= top + 10 && this.monkey.body.velocity.y >= -5
+
+    if (onTop) {
+      // Bird stunned: monkey can stand on it for 2s
+      this._birdStunnedUntil = now + 2000
+      this._birdBlinkAt = 0
+      this._birdDying = false
+      this._birdMonkeyDropAt = now + 2300
+      this.monkey.setVelocityY(0)
+      return
+    }
+
+    if (dx < 60 && dy < 45) {
+      // Bird pushes monkey down from the side/below
+      if (this.isGrabbing) this._releaseGrab()
+      if (this._isClimbingBamboo) {
+        this._isClimbingBamboo = false
+        this.monkey.setIgnoreGravity(false)
+      }
+      this.monkey.setVelocity(0, 8)
+    }
+  }
+
   _checkCrocodileHit() {
     if (!this.crocodiles.length || this._isGameOver) return
     for (const croc of this.crocodiles) {
       if (!croc.visible) continue
-      const dx = Math.abs(this.monkey.x - croc.x)
-      const dy = Math.abs(this.monkey.y - croc.y)
-      if (dx < 40 && dy < 30) {
-        this._startGameOver()
-        return
+      const mBounds = this.monkey.getBounds?.()
+      const cBounds = croc.getBounds?.()
+      if (mBounds && cBounds) {
+        const m = new Phaser.Geom.Rectangle(
+          mBounds.x + 5,
+          mBounds.y + 5,
+          Math.max(0, mBounds.width - 10),
+          Math.max(0, mBounds.height - 10)
+        )
+        const c = new Phaser.Geom.Rectangle(
+          cBounds.x + 5,
+          cBounds.y + 5,
+          Math.max(0, cBounds.width - 10),
+          Math.max(0, cBounds.height - 10)
+        )
+        if (Phaser.Geom.Intersects.RectangleToRectangle(m, c)) {
+          this._startGameOver()
+          return
+        }
       }
     }
   }
@@ -1064,12 +1357,32 @@ class GameScene extends Phaser.Scene {
   _startGameOver() {
     if (this._isGameOver) return
     this._isGameOver = true
+    this._playSfx('sfx-die', 0.7)
     const now = this.time?.now ?? 0
-    this._gameOverUntil = now + 5000
+    this._gameOverShowAt = now + 500
+    this._gameOverUntil = this._gameOverShowAt + 5000
+    this._gameOverShown = false
     this.monkey.setVelocity(0, 0)
     this.monkey.setIgnoreGravity(false)
     this.monkey.setStatic(false)
     this.monkey.setSensor(false)
+
+    // Immediately neutralize active actors/counters while countdown runs.
+    for (const c of this.crocodiles) c.setVisible(false)
+    this._crocActive = false
+    this._crocSpawnAt = 0
+    if (this._crocTimerText) this._crocTimerText.setText('30')
+
+    if (this.bird) {
+      this.bird.setVisible(false)
+      this._birdAlive = false
+    }
+
+    for (const b of this.bananas) {
+      if (b && b.setVisible) b.setVisible(false)
+    }
+    this.bananaScore = 0
+    if (this.bananaCounterText) this.bananaCounterText.setText('0')
 
     if (!this._gameOverBg) {
       const cx = this.cameras.main.width / 2
@@ -1105,25 +1418,27 @@ class GameScene extends Phaser.Scene {
         .setOrigin(0.5, 0.5)
         .setDepth(2001)
     }
-    this._gameOverBg.setVisible(true)
-    this._gameOverTitle.setVisible(true)
-    this._gameOverNumber.setVisible(true)
-    this._gameOverNumber.setText('5')
+    if (this._gameOverBg) this._gameOverBg.setVisible(false)
+    if (this._gameOverTitle) this._gameOverTitle.setVisible(false)
+    if (this._gameOverNumber) this._gameOverNumber.setVisible(false)
   }
 
   _updateGameOver() {
     if (!this._isGameOver) return
     const now = this.time?.now ?? 0
-    const remaining = Math.max(0, Math.ceil((this._gameOverUntil - now) / 1000))
-    if (this._gameOverNumber) {
-      this._gameOverNumber.setText(String(remaining))
+    if (now < this._gameOverShowAt) return
+    if (!this._gameOverShown) {
+      this._gameOverShown = true
+      if (this._gameOverBg) this._gameOverBg.setVisible(true)
+      if (this._gameOverTitle) this._gameOverTitle.setVisible(true)
+      if (this._gameOverNumber) this._gameOverNumber.setVisible(true)
     }
+    const remaining = Math.max(0, Math.ceil((this._gameOverUntil - now) / 1000))
+    if (this._gameOverNumber) this._gameOverNumber.setText(String(remaining))
     if (now >= this._gameOverUntil) {
-      if (this._gameOverBg) this._gameOverBg.setVisible(false)
-      if (this._gameOverTitle) this._gameOverTitle.setVisible(false)
-      if (this._gameOverNumber) this._gameOverNumber.setVisible(false)
       this._isGameOver = false
-      this.scene.restart()
+      this._gameOverShown = false
+      this.scene.restart({ forceLevel1: true })
     }
   }
 
@@ -1165,6 +1480,7 @@ class GameScene extends Phaser.Scene {
     banana.body && (banana.body.isSensor = true)
     this._bananaCleanup.push(banana)
     this.bananaScore += 1
+    this._playSfx('sfx-banana', 0.84)
     if (this.bananaCounterText) this.bananaCounterText.setText(String(this.bananaScore))
     this._collectedBananas += 1
     if (this._totalBananas > 0 && this._collectedBananas >= this._totalBananas) {
@@ -1188,6 +1504,7 @@ class GameScene extends Phaser.Scene {
     this._isSick = true
     this._sickImmobilizeUntil = 0
     this._sickAnimStart = 0
+    this._sickSfxPlayed = false
 
     if (this.isGrabbing) {
       // Drop from current position on the liana.
@@ -1223,12 +1540,17 @@ class GameScene extends Phaser.Scene {
     if (this._sickImmobilizeUntil === 0 && this._isGrounded()) {
       this._sickImmobilizeUntil = now + 3000
       this._sickAnimStart = now
+      if (!this._sickSfxPlayed) {
+        this._playSfx('sfx-sick', 0.7)
+        this._sickSfxPlayed = true
+      }
     }
 
     if (this._sickImmobilizeUntil > 0 && now >= this._sickImmobilizeUntil) {
       this._isSick = false
       this._sickImmobilizeUntil = 0
       this._sickAnimStart = 0
+      this._sickSfxPlayed = false
     }
   }
 
@@ -1273,6 +1595,7 @@ class GameScene extends Phaser.Scene {
   _startCelebration() {
     if (this._celebrationActive) return
     this._celebrationActive = true
+    this._playSfx('sfx-level-clear', 0.8)
     this._levelAdvanceAt = (this.time?.now ?? 0) + 3000
     const cx = this.cameras.main.width / 2
     const cy = this.cameras.main.height / 2 - 120
@@ -1382,6 +1705,25 @@ class GameScene extends Phaser.Scene {
     this.bananas = []
     this._bananaCleanup = []
     this._createBananas()
+
+    // Reset monkey to bottom-left start position
+    const size = this._monkeySize
+    const startX = 220
+    const startY = this.groundY - size / 2 - 2
+    this.monkey.setPosition(startX, startY)
+    this.monkey.setVelocity(0, 0)
+    this.isGrabbing = false
+    this._isClimbingBamboo = false
+    this._isOnBambooTop = false
+    this.grabbedTree = null
+    this.grabRatio = 1
+
+    if (this.bird) {
+      this.bird.destroy()
+      this.bird = null
+    }
+    this._birdAlive = false
+    this._createBird()
   }
 
   _isGrounded() {
@@ -1394,29 +1736,39 @@ class GameScene extends Phaser.Scene {
     return this._isGrounded()
   }
 
+  _isInputBlocked() {
+    const now = this.time?.now ?? 0
+    return this._introActive || (this._introIgnoreUntil && now < this._introIgnoreUntil)
+  }
+
   _jumpOrRelease() {
     if (this._isGameOver) return
+    if (this._isInputBlocked()) return
     if (this._isSick) return
     if (this._isClimbingBamboo) {
       this._isClimbingBamboo = false
       this.monkey.setIgnoreGravity(false)
+      this._playSfx('sfx-jump', 0.6)
       this._jumpImpulse(false)
       this._extraJumpAvailable = true
       return
     }
     if (this.isGrabbing) {
+      this._playSfx('sfx-jump', 0.6)
       this._jumpFromLiana()
       this._extraJumpAvailable = true
       return
     }
 
     if (this._canJump()) {
+      this._playSfx('sfx-jump', 0.6)
       this._jumpImpulse(false)
       this._extraJumpAvailable = true
       return
     }
 
     if (this._extraJumpAvailable) {
+      this._playSfx('sfx-swoosh', 0.3)
       this._jumpImpulse(false)
       this._extraJumpAvailable = false
     }
@@ -1476,6 +1828,7 @@ class GameScene extends Phaser.Scene {
 
   _tryGrab() {
     if (this._isGameOver) return
+    if (this._isInputBlocked()) return
     if (this._isSick) return
     if (this.isGrabbing) return
 
@@ -1889,13 +2242,38 @@ class GameScene extends Phaser.Scene {
       }
     }
 
+    if (this._birdAlive && this.bird && (this._birdStunnedUntil > (this.time?.now ?? 0) || this._birdDying)) {
+      const now = this.time?.now ?? 0
+      if (this._birdMonkeyDropAt > 0 && now >= this._birdMonkeyDropAt) {
+        return
+      }
+      const top = this.bird.y - 12
+      const left = this.bird.x - 40
+      const right = this.bird.x + 40
+      if (
+        monkeyBottom >= top - 2 &&
+        monkeyBottom <= top + 6 &&
+        this.monkey.x >= left &&
+        this.monkey.x <= right &&
+        this.monkey.body.velocity.y >= 0
+      ) {
+        this._lastGroundedAt = this.time?.now ?? 0
+        this._extraJumpAvailable = false
+        this._isOnTreePlatform = false
+        this.monkey.setVelocityY(0)
+        this.monkey.setPosition(this.monkey.x, top - this._monkeySize / 2)
+        return
+      }
+    }
+
     for (const p of this.platforms) {
       const top = p.y - p.h / 2
+      const edgePad = this._monkeySize * 0.5
       if (
         monkeyBottom >= top - 10 &&
         monkeyBottom <= top + 10 &&
-        this.monkey.x >= p.x - p.w / 2 &&
-        this.monkey.x <= p.x + p.w / 2 &&
+        this.monkey.x >= p.x - p.w / 2 - edgePad &&
+        this.monkey.x <= p.x + p.w / 2 + edgePad &&
         this.monkey.body.velocity.y >= -0.5
       ) {
         this._lastGroundedAt = this.time?.now ?? 0
@@ -1994,6 +2372,7 @@ class GameScene extends Phaser.Scene {
 
     const dashLen = 18
     for (const t of this.trees) {
+      if (!t?.pivotBody?.position || !t?.bob?.body?.position) continue
       const px = t.pivotBody.position.x
       const py = t.pivotBody.position.y
       const bx = t.bob.body.position.x
@@ -2014,6 +2393,7 @@ class GameScene extends Phaser.Scene {
     const amp = Math.PI / 3 // 60 degrees (120–240 around straight down)
 
     for (const t of this.trees) {
+      if (!t?.pivotBody?.position || !t?.bob?.body?.position) continue
       const theta = Math.sin(time * speed + t.phaseOffset) * amp
       const len = t.baseLen
       const px = t.pivotBody.position.x
