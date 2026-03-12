@@ -98,6 +98,8 @@ class GameScene extends Phaser.Scene {
     }
     this._crocSpawnAt = 0
     this._crocActive = false
+    this.monkeyContactsWithGround = 0
+    this._lastGroundedAt = 0
     this._crocTimerText = null
     this._crocTimerIcon = null
     this._isOnTreePlatform = false
@@ -195,8 +197,7 @@ class GameScene extends Phaser.Scene {
   }
 
   create() {
-    // Debug: if you see this text, the scene is running (remove once fixed)
-    this.add.text(16, 16, 'Scene started', { fontSize: '14px', color: '#88ff88' }).setScrollFactor(0).setDepth(9999)
+    // Debug text removed
 
     const qs = new URLSearchParams(window.location.search)
     const levelParam = Number(qs.get('level'))
@@ -746,9 +747,12 @@ class GameScene extends Phaser.Scene {
       const i = Phaser.Math.Between(0, this.platforms.length - 2)
       const a = this.platforms[i]
       const b = this.platforms[i + 1]
-      const leftEdge = a.x + a.w / 2 + 20
-      const rightEdge = b.x - b.w / 2 - 20
-      const bx = rightEdge > leftEdge ? Phaser.Math.Between(leftEdge, rightEdge) : (a.x + b.x) / 2
+      const leftEdge = a.x + a.w / 2
+      const rightEdge = b.x - b.w / 2
+      const gap = rightEdge - leftEdge
+      const minX = leftEdge + gap * 0.25
+      const maxX = rightEdge - gap * 0.25
+      const bx = gap > 0 ? Phaser.Math.Between(minX, maxX) : (a.x + b.x) / 2
 
       const lowestY = a.y
       const targetH = Math.max(120, (this.groundY - lowestY) * 0.9)
@@ -805,7 +809,11 @@ class GameScene extends Phaser.Scene {
     if (!this.textures.exists('bird')) return
     const y = this.worldH * 0.35
     this.bird = this.add.image(this.worldW + 100, y, 'bird').setDepth(16)
-    this.bird.setDisplaySize(70, 50)
+    const crocW = 180
+    const birdW = crocW * 0.75
+    const img = this.textures.get('bird')?.getSourceImage()
+    const birdH = img && img.width ? birdW * (img.height / img.width) : 50
+    this.bird.setDisplaySize(birdW, birdH)
     this._birdAlive = true
     this._birdBaseY = y
     this._birdPhase = 0
@@ -907,13 +915,14 @@ class GameScene extends Phaser.Scene {
 
   _createHUD() {
     this.hud = this.add
-      .text(16, 14, '', {
-        fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif',
+      .text(16, 40, '', {
+        fontFamily: '"Courier New", Courier, monospace',
         fontSize: '14px',
         color: '#000000'
       })
       .setScrollFactor(0)
       .setDepth(1000)
+    this._hudBg = this.add.graphics().setScrollFactor(0).setDepth(999)
 
     const cam = this.cameras.main
     const boxW = 140
@@ -1053,14 +1062,26 @@ class GameScene extends Phaser.Scene {
     if (!this.hud) return
     const state = this.isGrabbing ? 'på lian' : this._canJump() ? 'på mark' : 'i luften'
     const nearTxt = nearest ? `nära lian: ja` : 'nära lian: nej'
+    const now = this.time?.now ?? 0
+    const groundedAgeRaw = Math.max(0, now - (this._lastGroundedAt ?? 0))
+    const groundedAge = this._isGrounded() ? 0 : groundedAgeRaw < 16 ? 0 : groundedAgeRaw
+    const vyRaw = this.monkey?.body?.velocity?.y ?? 0
+    const vy = Math.abs(vyRaw) < 0.05 ? 0 : vyRaw
+    const groundedAgeTxt = String(Math.round(groundedAge)).padStart(2, '0')
     this.hud.setText(
       [
-        'Monkey Swing (prototype)',
-        'Piltangenter = vänster/höger   D = grabba gul punkt   Space = hoppa / släpp+hoppa   R = restart',
         `state: ${state}   ${nearTxt}`,
-        `monkey-state: ${this._monkeyVisualKey ?? 'n/a'}`
+        `monkey-state: ${this._monkeyVisualKey ?? 'n/a'}`,
+        `contacts: ${this.monkeyContactsWithGround}  vy: ${vy.toFixed(2)}  groundedAge: ${groundedAgeTxt}ms`
       ].join('\n')
     )
+    if (this._hudBg) {
+      const bounds = this.hud.getBounds()
+      const pad = 6
+      this._hudBg.clear()
+      this._hudBg.fillStyle(0xffffff, 0.6)
+      this._hudBg.fillRoundedRect(bounds.x - pad, bounds.y - pad, bounds.width + pad * 2, bounds.height + pad * 2, 6)
+    }
   }
 
   _handleMonkeyMovement() {
@@ -1356,6 +1377,9 @@ class GameScene extends Phaser.Scene {
 
   _startGameOver() {
     if (this._isGameOver) return
+    if (this._gameOverBg && !this._gameOverBg.active) this._gameOverBg = null
+    if (this._gameOverTitle && !this._gameOverTitle.active) this._gameOverTitle = null
+    if (this._gameOverNumber && !this._gameOverNumber.active) this._gameOverNumber = null
     this._isGameOver = true
     this._playSfx('sfx-die', 0.7)
     const now = this.time?.now ?? 0
@@ -1425,6 +1449,7 @@ class GameScene extends Phaser.Scene {
 
   _updateGameOver() {
     if (!this._isGameOver) return
+    if (this._gameOverNumber && (!this._gameOverNumber.active || this._gameOverNumber.scene !== this)) return
     const now = this.time?.now ?? 0
     if (now < this._gameOverShowAt) return
     if (!this._gameOverShown) {
@@ -1729,7 +1754,7 @@ class GameScene extends Phaser.Scene {
   _isGrounded() {
     if (this.monkeyContactsWithGround > 0) return true
     const now = this.time?.now ?? 0
-    return now - this._lastGroundedAt <= 150
+    return now - this._lastGroundedAt <= 150 && this.monkey.body.velocity.y >= -0.5
   }
 
   _canJump() {
@@ -2214,6 +2239,9 @@ class GameScene extends Phaser.Scene {
 
   _refreshGrounded() {
     const monkeyBottom = this.monkey.y + this._monkeySize / 2
+    if (this.monkeyContactsWithGround > 0 && monkeyBottom < this.groundY - 8) {
+      this.monkeyContactsWithGround = 0
+    }
     if (monkeyBottom >= this.groundY - 2 && this.monkey.body.velocity.y >= 0) {
       this._lastGroundedAt = this.time?.now ?? 0
       this._extraJumpAvailable = false
