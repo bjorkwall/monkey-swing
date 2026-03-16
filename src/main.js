@@ -70,6 +70,8 @@ class GameScene extends Phaser.Scene {
     this._crocNextId = 0
     this._lastCrocFrameAt = 0
     this._crocFrame = 1
+    this._sharkFrame = 1
+    this._lastSharkFrameAt = 0
     this._isGameOver = false
     this._gameOverUntil = 0
     this._gameOverText = null
@@ -78,6 +80,7 @@ class GameScene extends Phaser.Scene {
     this._gameOverBg = null
     this._gameOverShowAt = 0
     this._gameOverShown = false
+    this._isWaterLevel = false
     this._restartData = null
 
     this._bgm = null
@@ -116,8 +119,10 @@ class GameScene extends Phaser.Scene {
     this._birdDeathAt = 0
     this._birdMonkeyDropAt = 0
     this._birdDebugLine = null
+    this._birdBanana = null
 
     this._extraJumpAvailable = false
+    this._gubbstrutt = null
     this._introActive = false
     this._introImage = null
     this._introBorder = null
@@ -125,6 +130,8 @@ class GameScene extends Phaser.Scene {
     this._introIgnoreUntil = 0
     this._wasGrounded = false
     this._airborneStartY = null
+    this._swimBubbles = []
+    this._debugBoundsGfx = null
 
     this._jumpBoostActive = false
     this._jumpBoostUntil = 0
@@ -167,10 +174,20 @@ class GameScene extends Phaser.Scene {
     this.load.image('monkey-sick-2', 'assets/monkey/monkey-sick-2.png')
     this.load.image('monkey-sick-3', 'assets/monkey/monkey-sick-3.png')
     this.load.image('monkey-sick-4', 'assets/monkey/monkey-sick-4.png')
+    this.load.image('monkey-swim-right', 'assets/monkey/monkey-swim-right.png')
+    this.load.image('monkey-swim-left', 'assets/monkey/monkey-swim-left.png')
     this.load.image('crocodile-left-1', 'assets/crocodile/crocodile-left-1.png')
     this.load.image('crocodile-left-2', 'assets/crocodile/crocodile-left-2.png')
     this.load.image('crocodile-right-1', 'assets/crocodile/crocodile-right-1.png')
     this.load.image('crocodile-right-2', 'assets/crocodile/crocodile-right-2.png')
+    this.load.image('shark-right-1', 'assets/shark/shark-right-1.png')
+    this.load.image('shark-right-2', 'assets/shark/shark-right-2.png')
+    this.load.image('shark-right-3', 'assets/shark/shark-right-3.png')
+    this.load.image('shark-right-4', 'assets/shark/shark-right-4.png')
+    this.load.image('shark-left-1', 'assets/shark/shark-left-1.png')
+    this.load.image('shark-left-2', 'assets/shark/shark-left-2.png')
+    this.load.image('shark-left-3', 'assets/shark/shark-left-3.png')
+    this.load.image('shark-left-4', 'assets/shark/shark-left-4.png')
     this.load.audio('bgm-1', 'assets/music/monkey_swing_1.mp3')
     this.load.image('banana', 'assets/bananas/banana.png')
     this.load.image('rotten-banana', 'assets/bananas/rotten-banana.png')
@@ -179,6 +196,7 @@ class GameScene extends Phaser.Scene {
     this.load.image('tree-crown', 'assets/plants/tree-crown.png')
     this.load.image('bird', 'assets/bird/kakadua.png')
     this.load.image('instructions', 'assets/game/instructions.png')
+    this.load.image('gubbstrutt', 'assets/gubbstrutt/gubbstrutt.png')
     this.load.audio('sfx-jump', 'assets/sfx/jump.wav')
     this.load.audio('sfx-growl', 'assets/sfx/growl.wav')
     this.load.audio('sfx-land', 'assets/sfx/land.wav')
@@ -201,7 +219,9 @@ class GameScene extends Phaser.Scene {
 
     const qs = new URLSearchParams(window.location.search)
     const levelParam = Number(qs.get('level'))
-    if (this._restartData?.forceLevel1) {
+    if (Number.isFinite(this._restartData?.forceLevel) && this._restartData.forceLevel >= 1) {
+      this._level = Math.floor(this._restartData.forceLevel)
+    } else if (this._restartData?.forceLevel1) {
       this._level = 1
     } else if (Number.isFinite(levelParam) && levelParam >= 1) {
       this._level = Math.floor(levelParam)
@@ -217,6 +237,7 @@ class GameScene extends Phaser.Scene {
       this.worldH = this.baseWorldH
       this.groundY = this.baseGroundY
     }
+    this._isWaterLevel = this._level === 4
 
     // Hard reset on restart
     if (this.crocodiles?.length) {
@@ -233,12 +254,32 @@ class GameScene extends Phaser.Scene {
     if (this._gameOverBg) this._gameOverBg.setVisible(false)
     if (this._gameOverTitle) this._gameOverTitle.setVisible(false)
     if (this._gameOverNumber) this._gameOverNumber.setVisible(false)
+    if (this.bambooSprite) {
+      this.bambooSprite.destroy()
+      this.bambooSprite = null
+    }
+    if (this._bambooTopLine) {
+      this._bambooTopLine.destroy()
+      this._bambooTopLine = null
+    }
+    if (this.ropeGfx) {
+      this.ropeGfx.destroy()
+      this.ropeGfx = null
+    }
+    if (this.treesGfx) {
+      this.treesGfx.destroy()
+      this.treesGfx = null
+    }
+    this.trees = []
+    this.platforms = []
 
     try {
       if (!this.matter || !this.matter.world) {
         throw new Error('Matter physics not available on scene')
       }
+      if (this.matter.world.reset) this.matter.world.reset()
       this.matter.world.setBounds(0, 0, this.worldW, this.worldH, 64, true, true, true, true)
+      this.matter.world.engine.world.gravity.y = this._isWaterLevel ? 0.825 : 1.1
 
     this._ensureMonkeyTextures()
 
@@ -248,14 +289,15 @@ class GameScene extends Phaser.Scene {
       this._collectedBananas = 0
 
       this._drawBackground()
-    this._createGround()
-    this._createTrees()
-    this._createBananas()
+      this._createGround()
+      if (!this._isWaterLevel) this._createTrees()
+      this._createBananas()
       this._createMonkey()
       this._createCrocodile()
-      this._createBird()
+      if (!this._isWaterLevel) this._createBird()
+      this._createGubbstrutt()
       this._createHUD()
-    this._createAudio()
+      this._createAudio()
       this._resetCelebration()
       this._wireCollisions()
     } catch (err) {
@@ -342,6 +384,13 @@ class GameScene extends Phaser.Scene {
       this.monkey.setVelocity(0, 0)
     }
 
+    if (this.monkey) {
+      this.monkey.setVisible(true)
+      this.monkey.setAlpha(1)
+      this.monkey.setDepth(20)
+    }
+    this._focusCameraOnMonkey()
+
     if (this._bgm) {
       this._bgm.stop()
       this._bgm.destroy()
@@ -349,7 +398,32 @@ class GameScene extends Phaser.Scene {
       this._bgmKey = null
     }
 
-    this._showIntroOverlay()
+    if (this._restartData?.skipIntro) {
+      const now = this.time?.now ?? 0
+      this._crocSpawnAt = this._isWaterLevel ? now + 20000 : now + 30000
+      this._crocActive = false
+      if (this._crocTimerText) this._crocTimerText.setText('30')
+      this._playBgmForLevel(this._level)
+      this._introActive = false
+      this._introIgnoreUntil = now + 80
+
+      if (this._isWaterLevel) {
+        this._spawnInitialSharks()
+      }
+    } else {
+      this._showIntroOverlay()
+    }
+  }
+
+  _focusCameraOnMonkey() {
+    if (!this.monkey) return
+    const cam = this.cameras.main
+    const maxScrollX = Math.max(0, this.worldW - cam.width)
+    const maxScrollY = Math.max(0, this.worldH - cam.height)
+    cam.setScroll(
+      Phaser.Math.Clamp(this.monkey.x - cam.width / 2, 0, maxScrollX),
+      Phaser.Math.Clamp(this.monkey.y - cam.height / 2, 0, maxScrollY)
+    )
   }
 
   update() {
@@ -397,14 +471,18 @@ class GameScene extends Phaser.Scene {
     this._updateMonkeyVisual()
 
     this._updateCrocodile()
-    this._updateBird()
-    this._driveLianas()
-    const nearest = this._nearestBobWithin(70)
-    this._updateTreeMarkers(nearest)
-    this._drawRopes()
-    this._updateHUD(nearest)
+    if (!this._isWaterLevel) {
+      this._updateBird()
+      this._driveLianas()
+      const nearest = this._nearestBobWithin(70)
+      this._updateTreeMarkers(nearest)
+      this._drawRopes()
+      this._updateHUD(nearest)
+    } else {
+      this._updateHUD(null)
+    }
 
-    if (this.isGrabbing) {
+    if (this.isGrabbing && !this._isWaterLevel) {
       this._handleLianaClimb()
       this._syncGrabbedMonkey()
     }
@@ -415,6 +493,11 @@ class GameScene extends Phaser.Scene {
     this._updateCelebration()
     this._checkCrocodileHit()
     this._checkBirdHit()
+    this._checkGubbstruttHit()
+    this._updateSwimBubbles()
+    this._updateGubbstrutt()
+    this._drawDebugBounds()
+    this._handleSharkCollisions()
   }
 
   _showIntroOverlay() {
@@ -462,17 +545,22 @@ class GameScene extends Phaser.Scene {
     this._introMask = null
 
     const now = this.time?.now ?? 0
-    this._crocSpawnAt = now + 30000
+    this._crocSpawnAt = this._isWaterLevel ? now + 20000 : now + 30000
     this._crocActive = false
     if (this._crocTimerText) this._crocTimerText.setText('30')
     this._playBgmForLevel(this._level)
+    if (this._isWaterLevel) {
+      this._spawnInitialSharks()
+    }
   }
 
   _drawBackground() {
     const key = `jungle-bg-${this._level}`
+    const fallbackKey = 'jungle-bg-1'
     this._bgKey = key
-    if (this.textures.exists(key)) {
-      const bg = this.add.image(this.worldW / 2, this.worldH / 2, key).setDepth(-100)
+    const useKey = this.textures.exists(key) ? key : this.textures.exists(fallbackKey) ? fallbackKey : null
+    if (useKey) {
+      const bg = this.add.image(this.worldW / 2, this.worldH / 2, useKey).setDepth(-100)
 
       // "cover" the whole world area without stretching aspect ratio
       const sx = this.worldW / bg.width
@@ -495,6 +583,184 @@ class GameScene extends Phaser.Scene {
       for (let i = 0; i < 10; i++) {
         const x = i * 260
         hills.fillCircle(x + 120, this.worldH - 130, 220)
+      }
+    }
+  }
+
+  _spawnSwimBubbles() {
+    if (!this._isWaterLevel || !this.monkey) return
+    const baseX = this.monkey.x + this._monkeySize * 0.35
+    const baseY = this.monkey.y - 100
+    for (let i = 0; i < 3; i++) {
+      const b = this.add.text(baseX + i * 6, baseY + i * 6, 'o', {
+        fontFamily: '"Courier New", Courier, monospace',
+        fontSize: '16px',
+        color: '#7dd3fc'
+      })
+      b.setDepth(30)
+      b.setData('vy', 1.6 + i * 0.2)
+      this._swimBubbles.push(b)
+    }
+  }
+
+  _updateSwimBubbles() {
+    if (!this._swimBubbles.length) return
+    const top = this.cameras.main.scrollY - 20
+    for (const b of this._swimBubbles) {
+      const vy = b.getData('vy') ?? 1.6
+      b.y -= vy
+    }
+    this._swimBubbles = this._swimBubbles.filter((b) => {
+      if (b.y <= top) {
+        b.destroy()
+        return false
+      }
+      return true
+    })
+  }
+
+  _spawnInitialSharks() {
+    if (!this._isWaterLevel || !this.monkey) return
+    const minDist = 200
+    const startCount = 2
+    for (let i = 0; i < startCount; i++) {
+      const shark = this._getInactiveShark()
+      if (!shark) {
+        this._createCrocodile()
+      }
+      const s = this._getInactiveShark()
+      if (!s) continue
+      const pos = this._randomSharkPosition(minDist)
+      s.x = pos.x
+      s.y = pos.y
+      s.setVisible(true)
+      this._initShark(s)
+      this._playSfx('sfx-growl', 0.7)
+      this._crocActive = true
+    }
+  }
+
+  _getInactiveShark() {
+    return this.crocodiles.find((c) => !c.visible) || null
+  }
+
+  _randomSharkPosition(minDist) {
+    const minX = 80
+    const maxX = this.worldW - 80
+    const mid = this.worldW / 2
+    const monkeyRight = this.monkey.x >= mid
+    const leftMin = minX
+    const leftMax = Math.max(minX + 40, mid - 80)
+    const rightMin = Math.min(maxX - 40, mid + 80)
+    const rightMax = maxX
+    const spawnMinX = monkeyRight ? leftMin : rightMin
+    const spawnMaxX = monkeyRight ? leftMax : rightMax
+    const minY = 80
+    const maxY = this.groundY - 80
+    const sharks = this.crocodiles.filter((c) => c.visible)
+    let best = null
+    let bestDist = -1
+    for (let attempt = 0; attempt < 80; attempt++) {
+      const x = Phaser.Math.Between(spawnMinX, spawnMaxX)
+      const y = Phaser.Math.Between(minY, maxY)
+      const d = Phaser.Math.Distance.Between(x, y, this.monkey.x, this.monkey.y)
+      if (d < minDist) continue
+      let overlaps = false
+      for (const s of sharks) {
+        const sd = Phaser.Math.Distance.Between(x, y, s.x, s.y)
+        if (sd < 200) {
+          overlaps = true
+          break
+        }
+      }
+      if (overlaps) continue
+      if (d > bestDist) {
+        bestDist = d
+        best = { x, y }
+      }
+    }
+    if (best) return best
+    return { x: maxX - 120, y: minY + 60 }
+  }
+
+  _updateGubbstrutt() {
+    if (!this._gubbstrutt || !this.monkey) return
+    const targetX = this.monkey.x
+    const dx = targetX - this._gubbstrutt.x
+    const dir = Math.sign(dx)
+    const speed = Math.max(0.6, 0.4 * Math.abs(this.monkey.body.velocity.x))
+    this._gubbstrutt.x += dir * speed
+    this._gubbstrutt.y = this.groundY - 30
+  }
+
+  _drawDebugBounds() {
+    if (!this.monkey) return
+    if (!this._debugBoundsGfx) this._debugBoundsGfx = this.add.graphics().setDepth(9999)
+    this._debugBoundsGfx.clear()
+    this._debugBoundsGfx.lineStyle(2, 0xff3b30, 0.9)
+    const m = this.monkey.getBounds?.()
+    if (m) this._debugBoundsGfx.strokeRect(m.x, m.y, m.width, m.height)
+
+    this._debugBoundsGfx.lineStyle(2, 0x3b82f6, 0.9)
+    for (const croc of this.crocodiles) {
+      if (!croc.visible) continue
+      const b = croc.getBounds?.()
+      if (b) this._debugBoundsGfx.strokeRect(b.x, b.y, b.width, b.height)
+    }
+  }
+
+  _checkGubbstruttHit() {
+    if (!this._gubbstrutt || !this.monkey || this._isGameOver || this._celebrationActive) return
+    const mBounds = this.monkey.getBounds?.()
+    const gBounds = this._gubbstrutt.getBounds?.()
+    if (!mBounds || !gBounds) return
+    const m = new Phaser.Geom.Rectangle(
+      mBounds.x + 5,
+      mBounds.y + 5,
+      Math.max(0, mBounds.width - 10),
+      Math.max(0, mBounds.height - 10)
+    )
+    const g = new Phaser.Geom.Rectangle(
+      gBounds.x + 5,
+      gBounds.y + 5,
+      Math.max(0, gBounds.width - 10),
+      Math.max(0, gBounds.height - 10)
+    )
+    if (Phaser.Geom.Intersects.RectangleToRectangle(m, g)) {
+      this._startGameOver()
+    }
+  }
+
+  _handleSharkCollisions() {
+    if (!this._isWaterLevel) return
+    const sharks = this.crocodiles.filter((c) => c.visible)
+    for (let i = 0; i < sharks.length; i++) {
+      const a = sharks[i]
+      const ab = a.getBounds?.()
+      if (!ab) continue
+      for (let j = i + 1; j < sharks.length; j++) {
+        const b = sharks[j]
+        const bb = b.getBounds?.()
+        if (!bb) continue
+        if (Phaser.Geom.Intersects.RectangleToRectangle(ab, bb)) {
+          const angleA = a.getData('angle') ?? 0
+          const angleB = b.getData('angle') ?? 0
+          a.setData('angle', (360 - angleA) % 360)
+          b.setData('angle', (360 - angleB) % 360)
+          a.setData('nextTurnAt', (this.time?.now ?? 0) + 2000)
+          b.setData('nextTurnAt', (this.time?.now ?? 0) + 2000)
+          // Nudge apart to avoid overlap flicker
+          const dx = b.x - a.x
+          const dy = b.y - a.y
+          const dist = Math.hypot(dx, dy) || 1
+          const nx = dx / dist
+          const ny = dy / dist
+          const push = 12
+          a.x -= nx * push
+          a.y -= ny * push
+          b.x += nx * push
+          b.y += ny * push
+        }
       }
     }
   }
@@ -672,6 +938,14 @@ class GameScene extends Phaser.Scene {
           w: Math.max(220, Math.floor(p.w * 0.7)),
           h: 26
         })
+        if (this._level >= 3) {
+          layerDefs.push({
+            x: p.x,
+            y: p.y - delta * 2,
+            w: Math.max(200, Math.floor(p.w * 0.55)),
+            h: 24
+          })
+        }
       }
     }
 
@@ -777,10 +1051,19 @@ class GameScene extends Phaser.Scene {
     const startY = this.groundY - size / 2 - 2
 
     // `_ensureMonkeyTextures()` guarantees this exists, even without PNG files.
-    const monkeyDisplay = this.add.image(startX, startY, 'monkey-standing').setDepth(20)
-    monkeyDisplay.setDisplaySize(size, size)
+    const startKey = this._isWaterLevel ? 'monkey-swim-right' : 'monkey-standing'
+    const monkeyDisplay = this.add.image(startX, startY, startKey).setDepth(20)
+    if (this._isWaterLevel && this.textures.exists(startKey)) {
+      const img = this.textures.get(startKey)?.getSourceImage()
+      const w = img?.width ?? size
+      const h = img?.height ?? size
+      const width = h ? (size * w) / h : size
+      monkeyDisplay.setDisplaySize(width, size)
+    } else {
+      monkeyDisplay.setDisplaySize(size, size)
+    }
     monkeyDisplay.setOrigin(0.5, 0.5)
-    this._monkeyVisualKey = 'monkey-standing'
+    this._monkeyVisualKey = startKey
 
     this.monkey = this.matter.add.gameObject(monkeyDisplay, {
       shape: { type: 'rectangle', width: size, height: size },
@@ -794,14 +1077,55 @@ class GameScene extends Phaser.Scene {
   }
 
   _createCrocodile() {
-    if (!this.textures.exists('crocodile-right-1')) return
-    const y = this.groundY - 16
-    const croc = this.add.image(-200, y, 'crocodile-right-1').setDepth(15)
-    croc.setDisplaySize(180, 80)
+    const isWater = this._isWaterLevel
+    const key = isWater ? 'shark-right-1' : 'crocodile-right-1'
+    if (!this.textures.exists(key)) return
+    const y = this._crocSpawnY()
+    const croc = this.add.image(-200, y, key).setDepth(15)
+    const sharkScale = this._isWaterLevel ? 2.5 : 1
+    croc.setDisplaySize(180 * sharkScale, 80 * sharkScale)
     croc.setVisible(false)
     croc.setData('dir', 1)
     croc.setData('id', this._crocNextId++)
+    if (isWater) this._initShark(croc)
     this.crocodiles.push(croc)
+  }
+
+  _initShark(shark) {
+    if (!this.monkey) return
+    const dx = this.monkey.x - shark.x
+    const dy = this.monkey.y - shark.y
+    let angle = (Phaser.Math.RadToDeg(Math.atan2(dy, dx)) + 360) % 360
+    angle = Math.round(angle / 45) * 45 % 360
+    shark.setData('angle', angle)
+    const now = this.time?.now ?? 0
+    shark.setData('nextTurnAt', now + Phaser.Math.Between(2000, 3000))
+  }
+
+  _createGubbstrutt() {
+    if (this._level !== 5) return
+    if (!this.textures.exists('gubbstrutt') || !this.monkey) return
+    if (this._gubbstrutt) {
+      this._gubbstrutt.destroy()
+      this._gubbstrutt = null
+    }
+    const gx = this.worldW / 2
+    const gy = this.groundY - 30
+    const g = this.add.image(gx, gy, 'gubbstrutt').setDepth(14)
+    const targetH = 175
+    const img = this.textures.get('gubbstrutt')?.getSourceImage()
+    const w = img?.width ?? targetH
+    const h = img?.height ?? targetH
+    const width = h ? (targetH * w) / h : targetH
+    g.setDisplaySize(width, targetH)
+    this._gubbstrutt = g
+  }
+
+  _crocSpawnY() {
+    if (!this._isWaterLevel) return this.groundY - 16
+    const minY = 140
+    const maxY = Math.max(minY + 40, this.groundY - 80)
+    return Phaser.Math.Between(minY, maxY)
   }
 
   _createBird() {
@@ -825,6 +1149,7 @@ class GameScene extends Phaser.Scene {
     this._birdMonkeyDropAt = 0
     this.bird.setAlpha(1)
     this._playSfx('sfx-bird', 0.7)
+    this._spawnBirdBanana()
 
     if (!this._birdDebugLine) {
       this._birdDebugLine = this.add.graphics().setDepth(17)
@@ -899,8 +1224,8 @@ class GameScene extends Phaser.Scene {
       }
     }
 
-    // Exactly two rotten bananas
-    if (this.textures.exists('rotten-banana')) {
+    // Exactly two rotten bananas (skip on water level)
+    if (!this._isWaterLevel && this.textures.exists('rotten-banana')) {
       let placedCount = 0
       for (let attempt = 0; attempt < 80 && placedCount < 2; attempt++) {
         const x = Phaser.Math.Between(120, this.worldW - 120)
@@ -950,7 +1275,8 @@ class GameScene extends Phaser.Scene {
       .setDepth(1001)
 
     // Crocodile timer (same box)
-    this._crocTimerIcon = this.add.image(x + 92, y + boxH / 2, 'crocodile-right-1').setScrollFactor(0).setDepth(1001)
+    const crocIconKey = this._isWaterLevel && this.textures.exists('shark-right-1') ? 'shark-right-1' : 'crocodile-right-1'
+    this._crocTimerIcon = this.add.image(x + 92, y + boxH / 2, crocIconKey).setScrollFactor(0).setDepth(1001)
     this._crocTimerIcon.setDisplaySize(30, 18)
     this._crocTimerText = this.add
       .text(x + 112, y + 10, '30', {
@@ -1097,10 +1423,12 @@ class GameScene extends Phaser.Scene {
 
     const left = this._inputLeft()
     const right = this._inputRight()
+    const down = this._inputDown()
     const onGround = this._isGrounded()
 
     const vx = this.monkey.body.velocity.x
-    const maxSpeed = onGround ? 7 : 5.5
+    let maxSpeed = onGround ? 7 : 5.5
+    if (this._isWaterLevel) maxSpeed *= 1.15
 
     let desiredVx = 0
     if (left && !right) desiredVx = -maxSpeed
@@ -1114,10 +1442,33 @@ class GameScene extends Phaser.Scene {
       const lerp = onGround ? 0.22 : 0.08
       this.monkey.setVelocityX(Phaser.Math.Linear(vx, desiredVx, lerp))
     }
+
+    if (this._isWaterLevel) {
+      const swimDownSpeed = 4 * 1.15
+      if (down) {
+        const vy = this.monkey.body.velocity.y
+        this.monkey.setVelocityY(Math.max(vy, swimDownSpeed))
+      }
+    }
   }
 
   _updateMonkeyVisual() {
     if (!this.monkey) return
+
+    if (this._isWaterLevel) {
+      const vx = this.monkey.body.velocity.x
+      const key = vx < 0 ? 'monkey-swim-left' : 'monkey-swim-right'
+      if (key !== this._monkeyVisualKey && typeof this.monkey.setTexture === 'function') {
+        this.monkey.setTexture(key)
+        const img = this.textures.get(key)?.getSourceImage()
+        const w = img?.width ?? this._monkeySize
+        const h = img?.height ?? this._monkeySize
+        const width = h ? (this._monkeySize * w) / h : this._monkeySize
+        this.monkey.setDisplaySize(width, this._monkeySize)
+        this._monkeyVisualKey = key
+      }
+      return
+    }
 
     const hasTextures = [
       'monkey-standing',
@@ -1214,29 +1565,63 @@ class GameScene extends Phaser.Scene {
     const remaining = Math.max(0, Math.ceil((this._crocSpawnAt - now) / 1000))
     if (this._crocTimerText) this._crocTimerText.setText(String(remaining))
     if (now >= this._crocSpawnAt) {
+      if (this._isWaterLevel && this.crocodiles.filter((c) => c.visible).length >= 5) {
+        this._crocSpawnAt = now + 20000
+        return
+      }
       this._crocActive = true
       const croc = this.crocodiles.find((c) => !c.visible)
       if (croc) {
-        croc.x = -60
-        croc.setData('dir', 1)
-        croc.setVisible(true)
-        this._playSfx('sfx-growl', 0.7)
+        if (this._isWaterLevel) {
+          const pos = this._randomSharkPosition(200)
+          croc.x = pos.x
+          croc.y = pos.y
+          croc.setVisible(true)
+          this._initShark(croc)
+          this._playSfx('sfx-growl', 0.7)
+        } else {
+          croc.x = -60
+          croc.y = this._crocSpawnY()
+          croc.setData('dir', 1)
+          croc.setVisible(true)
+          this._playSfx('sfx-growl', 0.7)
+        }
       } else {
         this._createCrocodile()
         const created = this.crocodiles[this.crocodiles.length - 1]
-        created.x = -60
-        created.setData('dir', 1)
-        created.setVisible(true)
-        this._playSfx('sfx-growl', 0.7)
+        if (created) {
+          if (this._isWaterLevel) {
+            const pos = this._randomSharkPosition(200)
+            created.x = pos.x
+            created.y = pos.y
+            created.setVisible(true)
+            this._initShark(created)
+            this._playSfx('sfx-growl', 0.7)
+          } else {
+            created.x = -60
+            created.y = this._crocSpawnY()
+            created.setData('dir', 1)
+            created.setVisible(true)
+            this._playSfx('sfx-growl', 0.7)
+          }
+        }
       }
-      this._crocSpawnAt = now + 20000
+      this._crocSpawnAt = this._isWaterLevel ? now + 20000 : now + 20000
     }
     if (!this._crocActive) return
 
-    if (!this._lastCrocFrameAt) this._lastCrocFrameAt = now
-    if (now - this._lastCrocFrameAt >= 200) {
-      this._lastCrocFrameAt = now
-      this._crocFrame = this._crocFrame === 1 ? 2 : 1
+    if (!this._isWaterLevel) {
+      if (!this._lastCrocFrameAt) this._lastCrocFrameAt = now
+      if (now - this._lastCrocFrameAt >= 200) {
+        this._lastCrocFrameAt = now
+        this._crocFrame = this._crocFrame === 1 ? 2 : 1
+      }
+    } else {
+      if (!this._lastSharkFrameAt) this._lastSharkFrameAt = now
+      if (now - this._lastSharkFrameAt >= 250) {
+        this._lastSharkFrameAt = now
+        this._sharkFrame = this._sharkFrame === 4 ? 1 : this._sharkFrame + 1
+      }
     }
 
     const speed = this._crocSpeedBase * (1 + Math.min(this._level - 1, 4) * 0.05)
@@ -1244,22 +1629,53 @@ class GameScene extends Phaser.Scene {
     const maxX = this.worldW - 80
     for (const croc of this.crocodiles) {
       if (!croc.visible) continue
-      const dir = croc.getData('dir') ?? 1
-      croc.x += speed * dir
+      if (this._isWaterLevel) {
+        const now2 = this.time?.now ?? 0
+        const nextTurnAt = croc.getData('nextTurnAt') ?? 0
+        if (now2 >= nextTurnAt) {
+          this._initShark(croc)
+        }
+        const angle = croc.getData('angle') ?? 0
+        const rad = Phaser.Math.DegToRad(angle)
+        const base = Math.max(2.5, Math.abs(this.monkey.body.velocity.x) * 0.54)
+        const vx = Math.cos(rad) * base
+        const vy = Math.sin(rad) * base
+        croc.x += vx
+        croc.y += vy
+        if (croc.x <= minX || croc.x >= maxX) {
+          croc.x = Phaser.Math.Clamp(croc.x, minX, maxX)
+          croc.setData('angle', (180 - angle + 360) % 360)
+        }
+        const minY = 80
+        const maxY = this.groundY - 80
+        if (croc.y <= minY || croc.y >= maxY) {
+          croc.y = Phaser.Math.Clamp(croc.y, minY, maxY)
+          croc.setData('angle', (360 - angle) % 360)
+        }
+        const dirKey = Math.cos(rad) < 0 ? 'left' : 'right'
+        const frameKey = `shark-${dirKey}-${this._sharkFrame}`
+        if (croc.texture.key !== frameKey) {
+          croc.setTexture(frameKey)
+          croc.setDisplaySize(180 * 2.5, 80 * 2.5)
+        }
+      } else {
+        const dir = croc.getData('dir') ?? 1
+        croc.x += speed * dir
 
-      if (croc.x <= minX) {
-        croc.x = minX
-        croc.setData('dir', 1)
-      } else if (croc.x >= maxX) {
-        croc.x = maxX
-        croc.setData('dir', -1)
-      }
+        if (croc.x <= minX) {
+          croc.x = minX
+          croc.setData('dir', 1)
+        } else if (croc.x >= maxX) {
+          croc.x = maxX
+          croc.setData('dir', -1)
+        }
 
-      const dirKey = (croc.getData('dir') ?? 1) < 0 ? 'left' : 'right'
-      const frameKey = `crocodile-${dirKey}-${this._crocFrame}`
-      if (croc.texture.key !== frameKey) {
-        croc.setTexture(frameKey)
-        croc.setDisplaySize(180, 80)
+        const dirKey = (croc.getData('dir') ?? 1) < 0 ? 'left' : 'right'
+        const frameKey = `crocodile-${dirKey}-${this._crocFrame}`
+        if (croc.texture.key !== frameKey) {
+          croc.setTexture(frameKey)
+          croc.setDisplaySize(180, 80)
+        }
       }
     }
   }
@@ -1277,10 +1693,15 @@ class GameScene extends Phaser.Scene {
       this._birdPhase += 0.08
       this.bird.x += Math.sin(this._birdPhase) * 0.8
       this.bird.y += 4
+      this._syncBirdBanana()
       if (this.bird.y >= this.groundY - 10) {
         this.bird.destroy()
         this.bird = null
         this._birdAlive = false
+        if (this._birdBanana) {
+          this._birdBanana.destroy()
+          this._birdBanana = null
+        }
         if (this._birdDebugLine) this._birdDebugLine.clear()
       }
       return
@@ -1306,6 +1727,7 @@ class GameScene extends Phaser.Scene {
     this.bird.x += speed * this._birdDir
     this._birdPhase += 0.06
     this.bird.y = this._birdBaseY + Math.sin(this._birdPhase) * 30
+    this._syncBirdBanana()
 
     if (this.bird.x < -80) {
       this.bird.x = -80
@@ -1317,7 +1739,8 @@ class GameScene extends Phaser.Scene {
   }
 
   _checkBirdHit() {
-    if (!this._birdAlive || !this.bird || this._isGameOver) return
+    if (!this._birdAlive || !this.bird || this._isGameOver || this._celebrationActive) return
+    this._syncBirdBanana()
     const now = this.time?.now ?? 0
     const dx = Math.abs(this.monkey.x - this.bird.x)
     const dy = Math.abs(this.monkey.y - this.bird.y)
@@ -1348,8 +1771,44 @@ class GameScene extends Phaser.Scene {
     }
   }
 
+  _spawnBirdBanana() {
+    if (this._birdBanana) {
+      this._birdBanana.destroy()
+      this._birdBanana = null
+    }
+    if (!this.bird || !this.textures.exists('banana')) return
+
+    const bananaSize = 48
+    const bananaRadius = bananaSize * 0.45
+    const img = this.add.image(this.bird.x, this.bird.y - 24, 'banana').setDepth(17)
+    img.setDisplaySize(bananaSize, bananaSize)
+    const banana = this.matter.add.gameObject(img, {
+      isStatic: true,
+      isSensor: true,
+      shape: { type: 'circle', radius: bananaRadius }
+    })
+    banana.body.label = 'banana'
+    banana.setData('collected', false)
+    banana.setData('type', 'banana')
+    banana.setData('radius', bananaRadius)
+    this.bananas.push(banana)
+    this._totalBananas += 1
+    this._birdBanana = banana
+  }
+
+  _syncBirdBanana() {
+    if (!this._birdBanana || !this.bird) return
+    if (this._birdBanana.getData('collected')) return
+    const x = this.bird.x
+    const y = this.bird.y - 24
+    this._birdBanana.setPosition(x, y)
+    if (this._birdBanana.body) {
+      Phaser.Physics.Matter.Matter.Body.setPosition(this._birdBanana.body, { x, y })
+    }
+  }
+
   _checkCrocodileHit() {
-    if (!this.crocodiles.length || this._isGameOver) return
+    if (!this.crocodiles.length || this._isGameOver || this._celebrationActive) return
     for (const croc of this.crocodiles) {
       if (!croc.visible) continue
       const mBounds = this.monkey.getBounds?.()
@@ -1504,6 +1963,7 @@ class GameScene extends Phaser.Scene {
     banana.setVisible(false)
     banana.body && (banana.body.isSensor = true)
     this._bananaCleanup.push(banana)
+    if (this._birdBanana === banana) this._birdBanana = null
     this.bananaScore += 1
     this._playSfx('sfx-banana', 0.84)
     if (this.bananaCounterText) this.bananaCounterText.setText(String(this.bananaScore))
@@ -1708,47 +2168,10 @@ class GameScene extends Phaser.Scene {
   }
 
   _advanceLevel() {
-    this._level += 1
+    const nextLevel = this._level + 1
+    this._levelAdvanceAt = 0
     this._resetCelebration()
-    if (this._levelBadgeText) this._levelBadgeText.setText(`L${this._level}`)
-    this._playBgmForLevel(this._level)
-
-    // Reset crocodiles for new level
-    for (const c of this.crocodiles) c.destroy()
-    this.crocodiles = []
-    this._crocNextId = 0
-    this._crocActive = false
-    this._crocSpawnAt = (this.time?.now ?? 0) + 30000
-    if (this._crocTimerText) this._crocTimerText.setText('30')
-    this._createCrocodile()
-
-    // Remove existing bananas and respawn fresh placements
-    for (const b of this.bananas) {
-      if (b && b.body) this.matter.world.remove(b.body)
-      if (b && b.destroy) b.destroy()
-    }
-    this.bananas = []
-    this._bananaCleanup = []
-    this._createBananas()
-
-    // Reset monkey to bottom-left start position
-    const size = this._monkeySize
-    const startX = 220
-    const startY = this.groundY - size / 2 - 2
-    this.monkey.setPosition(startX, startY)
-    this.monkey.setVelocity(0, 0)
-    this.isGrabbing = false
-    this._isClimbingBamboo = false
-    this._isOnBambooTop = false
-    this.grabbedTree = null
-    this.grabRatio = 1
-
-    if (this.bird) {
-      this.bird.destroy()
-      this.bird = null
-    }
-    this._birdAlive = false
-    this._createBird()
+    this.scene.restart({ forceLevel: nextLevel, skipIntro: true })
   }
 
   _isGrounded() {
@@ -1770,6 +2193,12 @@ class GameScene extends Phaser.Scene {
     if (this._isGameOver) return
     if (this._isInputBlocked()) return
     if (this._isSick) return
+    if (this._isWaterLevel) {
+      this._playSfx('sfx-jump', 0.6)
+      this._jumpImpulse(false, 0, -1, 0.75)
+      this._spawnSwimBubbles()
+      return
+    }
     if (this._isClimbingBamboo) {
       this._isClimbingBamboo = false
       this.monkey.setIgnoreGravity(false)
@@ -1855,6 +2284,7 @@ class GameScene extends Phaser.Scene {
     if (this._isGameOver) return
     if (this._isInputBlocked()) return
     if (this._isSick) return
+    if (this._isWaterLevel) return
     if (this.isGrabbing) return
 
     const maxDist = 70
